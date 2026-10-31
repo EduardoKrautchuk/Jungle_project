@@ -1,0 +1,28 @@
+name: jungle_gaming
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    container_name: jungle_gaming_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${DATABASE_USER:?DATABASE_USER is required}
+      POSTGRES_PASSWORD: ${DATABASE_PASSWORD:?DATABASE_PASSWORD is required}
+      POSTGRES_DB: ${DATABASE_NAME:?DATABASE_NAME is required}
+      POSTGRES_TEST_DB: ${DATABASE_TEST_NAME:?DATABASE_TEST_NAME is required}
+    ports:
+      - '127.0.0.1:${DATABASE_PORT:-55432}:5432'
+    volumes:
+      - jungle_gaming_pg_data:/var/lib/postgresql/data
+      - ./docker/postgres/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test:
+        ['CMD-SHELL', 'pg_isready -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}"']
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 10s
+
+volumes:
+  jungle_gaming_pg_data:
+    name: jungle_gaming_pg_data
