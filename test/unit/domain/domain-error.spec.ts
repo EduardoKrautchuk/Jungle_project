@@ -17,6 +17,16 @@ import {
   InvalidWalletError,
   WalletError,
 } from '../../../src/domain/wallet/wallet.errors.js';
+import {
+  InvalidTransactionReferenceError,
+  InvalidTransactionStateError,
+  InvalidWagerTransactionError,
+  WagerTransactionError,
+} from '../../../src/domain/wagering/wager-transaction.errors.js';
+import {
+  FailureCode,
+  WagerTransactionStatus,
+} from '../../../src/domain/wagering/wager-transaction.enums.js';
 
 describe('DomainError hierarchy', () => {
   it.each([
@@ -32,6 +42,24 @@ describe('DomainError hierarchy', () => {
     [new UnbalancedLedgerEntryError(), LedgerError, 'LEDGER_UNBALANCED_ENTRY'],
     [new InvalidWalletError('x'), WalletError, 'WALLET_INVALID'],
     [new InsufficientFundsError(), WalletError, 'WALLET_INSUFFICIENT_FUNDS'],
+    [
+      new InvalidWagerTransactionError('x'),
+      WagerTransactionError,
+      'WAGER_INVALID_TRANSACTION',
+    ],
+    [
+      new InvalidTransactionStateError(
+        WagerTransactionStatus.Processed,
+        WagerTransactionStatus.Rejected,
+      ),
+      WagerTransactionError,
+      'WAGER_INVALID_STATE_TRANSITION',
+    ],
+    [
+      new InvalidTransactionReferenceError(FailureCode.ReferenceMismatch),
+      WagerTransactionError,
+      'WAGER_INVALID_REFERENCE',
+    ],
   ] as const)('%p keeps its stable code', (error, family, code) => {
     expect(error).toBeInstanceOf(Error);
     expect(error).toBeInstanceOf(DomainError);
