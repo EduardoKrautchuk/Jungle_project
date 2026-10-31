@@ -1,18 +1,12 @@
+import { DomainError } from '../shared/domain-error.js';
+
 export type MoneyErrorCode =
   | 'MONEY_INVALID_AMOUNT'
   | 'MONEY_INVALID_CURRENCY'
   | 'MONEY_CURRENCY_MISMATCH'
   | 'MONEY_OUT_OF_RANGE';
 
-export abstract class MoneyError extends Error {
-  protected constructor(
-    readonly code: MoneyErrorCode,
-    message: string,
-  ) {
-    super(message);
-    this.name = new.target.name;
-  }
-}
+export abstract class MoneyError extends DomainError<MoneyErrorCode> {}
 
 export class InvalidMoneyAmountError extends MoneyError {
   constructor() {

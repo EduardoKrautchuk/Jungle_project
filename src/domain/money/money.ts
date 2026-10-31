@@ -33,7 +33,10 @@ export class Money {
 
   static from(props: MoneyProps): Money {
     const currency = Money.parseCurrency(props.currency);
-    if (typeof props.amount !== 'string' || !AMOUNT_PATTERN.test(props.amount)) {
+    if (
+      typeof props.amount !== 'string' ||
+      !AMOUNT_PATTERN.test(props.amount)
+    ) {
       throw new InvalidMoneyAmountError();
     }
     return Money.of(new MoneyDecimal(props.amount), currency);

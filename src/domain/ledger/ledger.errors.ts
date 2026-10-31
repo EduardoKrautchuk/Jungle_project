@@ -1,15 +1,9 @@
+import { DomainError } from '../shared/domain-error.js';
+
 export type LedgerErrorCode =
   'LEDGER_INVALID_ENTRY' | 'LEDGER_UNBALANCED_ENTRY';
 
-export abstract class LedgerError extends Error {
-  protected constructor(
-    readonly code: LedgerErrorCode,
-    message: string,
-  ) {
-    super(message);
-    this.name = new.target.name;
-  }
-}
+export abstract class LedgerError extends DomainError<LedgerErrorCode> {}
 
 export class InvalidLedgerEntryError extends LedgerError {
   constructor(reason: string) {
