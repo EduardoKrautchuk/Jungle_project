@@ -50,6 +50,7 @@ import {
   type Harness,
   type TestQueues,
 } from './support.js';
+import { stack } from '../pending/support.js';
 import { TcpProxy } from './tcp-proxy.js';
 
 setDefaultTimeout(90_000);
@@ -513,6 +514,68 @@ describe('deduplication', () => {
     }
     expect(await debitCount(wallet.id)).toBe(1);
     expect(await inboxCount(message.messageId)).toBe(1);
+  });
+});
+
+describe('replay after a pending reference is resolved', () => {
+  it('acknowledges a redelivered REFUND as a replay of the settled result without a second credit', async () => {
+    await db.query(
+      `UPDATE wager_transactions SET next_reference_attempt_at = '2100-01-01T00:00:00Z'
+        WHERE status = 'PENDING_REFERENCE'`,
+    );
+    const wallet = await createWallet(orm);
+    const bet = wagerData(wallet);
+    const refund = envelope(
+      wagerData(wallet, {
+        kind: 'REFUND',
+        referenceExternalTransactionId: bet.externalTransactionId,
+      }),
+    );
+    await send(client, queues, refund);
+    const first = buildConsumer(orm, client, queues);
+    await processAll(first, [refund.messageId]);
+    expect(results(first)).toEqual(['PENDING_REFERENCE']);
+
+    const betMessage = envelope(bet);
+    await send(client, queues, betMessage);
+    const second = buildConsumer(orm, client, queues);
+    await processAll(second, [betMessage.messageId]);
+
+    const pendingStack = stack(orm);
+    pendingStack.clock.advance(10 * 60_000);
+    const candidates = await pendingStack.resolver.listDue(10, 'sqs');
+    const [candidate] = candidates;
+    if (candidate === undefined || candidates.length !== 1) {
+      throw new Error('expected exactly one pending candidate');
+    }
+    expect((await pendingStack.resolver.resolve(candidate)).result).toBe(
+      'PROCESSED',
+    );
+
+    const redelivered = { ...refund, messageId: `${refund.messageId}-again` };
+    await send(client, queues, redelivered);
+    await send(client, queues, refund);
+    const third = buildConsumer(orm, client, queues);
+    await processAll(third, [redelivered.messageId, refund.messageId]);
+
+    expect(results(third).sort()).toEqual(['DUPLICATE_MESSAGE', 'REPLAYED']);
+    const replayed = third.log
+      .events('message.processed')
+      .find((entry) => entry.fields.result === 'REPLAYED');
+    expect(replayed?.fields.failureCode).toBeUndefined();
+    const [row] = await db.query(
+      'SELECT status FROM wager_transactions WHERE external_transaction_id = ?',
+      [refund.data.externalTransactionId],
+    );
+    expect(row?.status).toBe('PROCESSED');
+    expect(
+      await scalar(
+        db,
+        "SELECT count(*)::int AS value FROM wallet_ledger_entries WHERE wallet_id = ? AND direction = 'CREDIT'",
+        [wallet.id],
+      ),
+    ).toBe(2);
+    expect(await balanceOf(db, wallet.id)).toBe('100.00');
   });
 });
 

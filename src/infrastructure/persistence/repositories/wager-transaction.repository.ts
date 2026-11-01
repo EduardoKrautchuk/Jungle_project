@@ -5,6 +5,7 @@ import {
 } from '@mikro-orm/postgresql';
 import { ConcurrencyConflictError } from '../../../application/ports/persistence.errors.js';
 import type {
+  PendingReferenceCandidate,
   IdempotencyClaim,
   StoredWagerTransaction,
   WagerTransactionRepository,
@@ -143,6 +144,29 @@ export class MikroOrmWagerTransactionRepository implements WagerTransactionRepos
       },
     );
     return records.map(toStoredTransaction);
+  }
+
+  async listDuePendingReferences(
+    now: Date,
+    limit: number,
+    salt: string,
+  ): Promise<PendingReferenceCandidate[]> {
+    const rows = await this.em.execute<
+      { id: string; wallet_id: string; reference_attempts: number }[]
+    >(
+      `SELECT id, wallet_id, reference_attempts
+         FROM wager_transactions
+        WHERE status = 'PENDING_REFERENCE'
+          AND next_reference_attempt_at <= ?
+        ORDER BY next_reference_attempt_at, md5(id::text || ?)
+        LIMIT ?`,
+      [now, salt, limit],
+    );
+    return rows.map((row) => ({
+      transactionId: row.id,
+      walletId: row.wallet_id,
+      referenceAttempts: Number(row.reference_attempts),
+    }));
   }
 
   private async findOne(

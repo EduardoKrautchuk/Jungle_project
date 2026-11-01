@@ -55,6 +55,7 @@ import { SystemClock, UuidV7Generator } from '../runtime/system-runtime.js';
   exports: [
     CLOCK,
     ID_GENERATOR,
+    WagerSettlement,
     SubmitWagerTransaction,
     CreateWallet,
     WalletQueries,

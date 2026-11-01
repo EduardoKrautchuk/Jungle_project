@@ -94,7 +94,11 @@ export class WagerSettlement {
 
     if (!transaction.affectsBalance()) {
       transaction.markProcessed(reference?.id, context.now);
-      const settled = { ...stored, resultBalance: wallet.balance };
+      const settled = {
+        ...stored,
+        resultBalance: wallet.balance,
+        nextReferenceAttemptAt: undefined,
+      };
       await repositories.transactions.update(settled, previousStatus);
       await this.#publish(repositories, context, (event) =>
         WagerTransactionProcessed.from(
@@ -143,7 +147,11 @@ export class WagerSettlement {
     }
 
     transaction.markProcessed(reference?.id, at);
-    const settled = { ...stored, resultBalance: wallet.balance };
+    const settled = {
+      ...stored,
+      resultBalance: wallet.balance,
+      nextReferenceAttemptAt: undefined,
+    };
     await repositories.wallets.update(wallet, expectedVersion);
     await repositories.ledger.append(entry);
     await repositories.transactions.update(settled, previousStatus);
@@ -159,6 +167,16 @@ export class WagerSettlement {
       WalletBalanceChanged.from(wallet, entry, event),
     );
     return settled;
+  }
+
+  expireReference(
+    repositories: TransactionalRepositories,
+    wallet: Wallet,
+    stored: StoredWagerTransaction,
+    failureCode: FailureCode,
+    context: SettlementContext,
+  ): Promise<StoredWagerTransaction> {
+    return this.#reject(repositories, wallet, stored, failureCode, context);
   }
 
   async #waitForReference(

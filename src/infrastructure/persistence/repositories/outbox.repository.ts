@@ -21,6 +21,17 @@ export class MikroOrmOutboxRepository implements OutboxRepository {
     return record ? toOutboxMessage(record) : undefined;
   }
 
+  async findLatestByAggregate(
+    aggregateId: string,
+  ): Promise<OutboxMessage | undefined> {
+    const record = await this.em.findOne(
+      OutboxMessageSchema,
+      { aggregateId },
+      { orderBy: { occurredAt: 'desc', id: 'desc' }, disableIdentityMap: true },
+    );
+    return record ? toOutboxMessage(record) : undefined;
+  }
+
   async lockDue(now: Date, limit: number): Promise<OutboxMessage[]> {
     const records = await this.em.find(
       OutboxMessageSchema,

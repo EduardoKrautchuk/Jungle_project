@@ -15,6 +15,9 @@ const SQS_WORKER_PATH = fileURLToPath(
 const OUTBOX_PUBLISHER_PATH = fileURLToPath(
   new URL('./outbox-publisher-process.ts', import.meta.url),
 );
+const PENDING_WORKER_PATH = fileURLToPath(
+  new URL('./pending-worker-process.ts', import.meta.url),
+);
 
 type Child = Bun.Subprocess<'pipe', 'pipe', 'pipe'>;
 
@@ -60,6 +63,13 @@ export class WorkerProcess {
     env: Record<string, string>,
   ): WorkerProcess {
     return WorkerProcess.start(name, OUTBOX_PUBLISHER_PATH, env);
+  }
+
+  static spawnPendingWorker(
+    name: string,
+    env: Record<string, string>,
+  ): WorkerProcess {
+    return WorkerProcess.start(name, PENDING_WORKER_PATH, env);
   }
 
   output(prefix: string): string[] {

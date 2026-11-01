@@ -45,6 +45,12 @@ export interface WalletRepository {
   update(wallet: Wallet, expectedVersion: number): Promise<void>;
 }
 
+export interface PendingReferenceCandidate {
+  readonly transactionId: string;
+  readonly walletId: string;
+  readonly referenceAttempts: number;
+}
+
 export interface WagerTransactionRepository {
   claim(stored: StoredWagerTransaction): Promise<IdempotencyClaim>;
   insert(stored: StoredWagerTransaction): Promise<void>;
@@ -68,6 +74,11 @@ export interface WagerTransactionRepository {
     now: Date,
     limit: number,
   ): Promise<StoredWagerTransaction[]>;
+  listDuePendingReferences(
+    now: Date,
+    limit: number,
+    salt: string,
+  ): Promise<PendingReferenceCandidate[]>;
 }
 
 export interface LedgerRepository {
@@ -95,6 +106,9 @@ export interface OutboxRepository {
   enqueue(message: OutboxMessage): Promise<void>;
   findById(id: string): Promise<OutboxMessage | undefined>;
   lockDue(now: Date, limit: number): Promise<OutboxMessage[]>;
+  findLatestByAggregate(
+    aggregateId: string,
+  ): Promise<OutboxMessage | undefined>;
   save(message: OutboxMessage): Promise<void>;
 }
 

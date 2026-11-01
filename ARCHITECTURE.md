@@ -105,7 +105,6 @@ Logs JSON por linha, sem payload financeiro, com estes campos: `consumerName`, `
 ### Limitações conhecidas
 
 - **LocalStack**: a versão 4.4 foi fixada porque as imagens mais recentes exigem token. A edição community não persiste filas; elas são recriadas pelo script de init a cada start.
-- **`PENDING_REFERENCE`**: a resolução depende do worker da Etapa 9.
 
 ## Publisher da Outbox
 
@@ -184,3 +183,82 @@ O claim é um único statement SQL, sem transação aberta durante a chamada de 
 
 - `bun run outbox:backlog` mostra, para o banco de desenvolvimento, eventos pendentes, vencidos, em retry, com lease ativo ou expirado, publicados e em dead-letter, além da idade do pendente mais antigo. Use `-- --test` para o banco de testes.
 - A API HTTP não inicia o publisher.
+
+## Resolução de `PENDING_REFERENCE`
+
+### Fluxo
+
+Um `REFUND`, `ROLLBACK` ou `WIN` com referência que chega antes dela é gravado como `PENDING_REFERENCE` com `next_reference_attempt_at = agora + 1s` e o evento `WagerTransactionPendingReference`. O worker independente `bun run pending:worker` reavalia essas transações:
+
+1. **Seleção sem lock**: um `SELECT` comum, fora de transação explícita, lista os candidatos vencidos (`status = PENDING_REFERENCE AND next_reference_attempt_at <= now`). Cada instância ordena por `next_reference_attempt_at, md5(id || workerId)`, o que espalha o trabalho entre instâncias.
+2. **Resolução**: para cada candidato, `runWithWalletLock(walletId)`, exatamente o mesmo caminho da API e do consumidor SQS. Dentro desse lock:
+   1. relê a transação pendente;
+   2. faz o fencing: só segue se o status ainda for `PENDING_REFERENCE`, `reference_attempts` for igual ao valor visto na seleção e a transação estiver vencida; caso contrário, `SKIPPED`;
+   3. chama `WagerSettlement.settle`, a mesma regra financeira da entrada, que resolve a referência por `(providerId, referenceExternalTransactionId)`, valida, confere reversão prévia e aplica wallet, ledger, transação e outbox;
+   4. se a referência continua ausente, faz `reference_attempts+1` e `next_reference_attempt_at = agora + min(base × 2^tentativas, máximo)`;
+   5. ao atingir `PENDING_REFERENCE_MAX_ATTEMPTS`, rejeita com `REFERENCE_NOT_FOUND` (ou `REFERENCE_NOT_PROCESSED`, se a referência existe mas nunca ficou terminal) e grava `WagerTransactionRejected` na outbox no mesmo commit.
+3. **Identidade**: a transação original é atualizada no lugar (mesmo `id`, `idempotencyKey`, `payloadHash` e referência), e os eventos herdam o `correlationId` e o `causationId` do evento original da transação.
+
+### Replay de operações aceitas como pendentes
+
+O enunciado define dois comportamentos de replay:
+
+- "requisição idêntica → mesma resposta, `idempotentReplay: true`" (seção 9);
+- "repetir uma operação já processada retorna o resultado original, incluindo o saldo observado naquele momento" (regra 7).
+
+Ele também pede que interpretações adicionais sejam documentadas. A interpretação adotada é que o replay devolve sempre o estado atual persistido da transação:
+
+| Momento do reenvio | HTTP | Corpo |
+|---|---|---|
+| Enquanto `PENDING_REFERENCE` | 202 | idêntico ao original, com `idempotentReplay: true` |
+| Depois da resolução | 200 | `PROCESSED` com o saldo observado na liquidação, estável em reenvios seguintes |
+| Depois de rejeição ou esgotamento | 422 | `REJECTED` com o `failureCode` (por exemplo `REFERENCE_NOT_FOUND`), também estável |
+
+O 202 significa "aceite com processamento pendente", não um resultado. Congelar a resposta em 202 esconderia o desfecho do provedor e contradiria a regra 7 depois que a operação foi processada. `GET /wagering/transactions/:id` mostra o mesmo estado.
+
+**Pelo SQS** a semântica é a mesma: o mesmo `messageId` é `DUPLICATE_MESSAGE`, e um novo `messageId` com a mesma operação é `REPLAYED`. Em ambos os casos a mensagem é confirmada sem novo efeito financeiro.
+
+**Depois do esgotamento** a transação é terminal:
+
+| Reenvio | Resultado |
+|---|---|
+| Mesmo `externalTransactionId` com a mesma chave | Replay 422 |
+| Mesmo `externalTransactionId` com outra chave | 409 `IDEMPOTENCY_CONFLICT`, pela unicidade `(providerId, externalTransactionId)` |
+| Novo `externalTransactionId` com nova chave | Operação nova, que pode ser processada |
+
+### Ordem dos locks
+
+```
+API / SQS:  wallet (FOR NO KEY UPDATE) → inbox (PK) → wager_tx INSERT (FK: KEY SHARE na wallet já travada)
+            → wallet UPDATE → ledger INSERT → wager_tx UPDATE (FK: KEY SHARE na referência, mesma wallet) → outbox INSERT
+Worker:     SELECT de candidatos (sem lock, sem transação aberta)
+            → [nova transação] wallet (FOR NO KEY UPDATE) → releitura → wallet UPDATE → ledger INSERT
+            → wager_tx UPDATE → outbox INSERT
+Publisher:  apenas outbox_messages, em statements curtos
+```
+
+- Toda linha de `wager_transactions`, `wallet_ledger_entries` e `wallets` é alterada só por quem detém o lock da wallet, e a referência pertence à mesma wallet por constraint. Não há ciclo possível.
+- O worker não tem fase de claim nem lease: ele nunca segura um lock de pendência enquanto espera a wallet (comprovado com `pg_locks` no teste G).
+- Um processo morto libera o lock da wallet quando a conexão cai, e a pendência continua elegível. Por isso não há claims a recuperar.
+
+### Retries e esgotamento
+
+- **Padrão**: `PENDING_REFERENCE_BASE_DELAY_MS=1000`, `PENDING_REFERENCE_MAX_DELAY_MS=300000` e `PENDING_REFERENCE_MAX_ATTEMPTS=12`. A janela total fica em torno de 23 minutos (1s, 2s, 4s… até 300s), o suficiente para atrasos normais de provedor sem deixar pendências eternas.
+- **Erros operacionais** (`lock_timeout`, deadlock, PostgreSQL indisponível): fazem rollback e não consomem tentativa. A pendência continua vencida e é retomada no ciclo seguinte; o worker espera `PENDING_WORKER_IDLE_POLL_MS` quando nenhum candidato avançou.
+- **Referência de outro provider**: nunca é encontrada, porque a busca é feita com o próprio provider. A transação expira como `REFERENCE_NOT_FOUND`.
+
+### DLQ e mecanismos distintos
+
+| Mecanismo | Papel |
+|---|---|
+| `PENDING_REFERENCE` (PostgreSQL) | Estado de negócio, resolvido pelo worker |
+| Inbox | Deduplicação de entrega. Não é alterada pelo worker |
+| Mensagem SQS de entrada | Confirmada assim que a pendência é gravada |
+| DLQ de entrada | Recebe só mensagens malformadas, conflitantes ou com retries técnicos esgotados. Pendências esgotadas não vão para ela: viram `REJECTED` com um evento auditável |
+| Outbox e fila de eventos | Publicam o `WagerTransactionRejected` final |
+
+Replay administrativo da DLQ está fora do escopo. Reenviar a mesma mensagem preserva a idempotência pelo `messageId` e pela `idempotencyKey`.
+
+### Operação
+
+`bun run pending:backlog` mostra pendências totais, vencidas, em retry, esgotadas, resolvidas após retry, o número máximo de tentativas e a idade da pendência mais antiga. Use `-- --test` para o banco de testes.
