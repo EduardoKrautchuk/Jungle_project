@@ -306,12 +306,13 @@ describe('pending reference workers in independent Bun processes', () => {
     },
   );
 
-  it('A: three workers share a backlog of pendings across many wallets', async () => {
+  it('A: three concurrent workers resolve a shared backlog of pendings exactly once', async () => {
     const wallets: WalletRef[] = [];
+    const pendingIds: string[] = [];
     for (let index = 0; index < 30; index += 1) {
       const wallet = await openWallet(s);
       const betId = uniqueRef('bet');
-      await s.submit.execute(
+      const refund = await s.submit.execute(
         command(wallet, {
           kind: 'REFUND',
           referenceExternalTransactionId: betId,
@@ -319,8 +320,28 @@ describe('pending reference workers in independent Bun processes', () => {
       );
       await s.submit.execute(command(wallet, { externalTransactionId: betId }));
       wallets.push(wallet);
+      pendingIds.push(refund.transactionId);
     }
+    const idList = pendingIds.map(() => '?').join(', ');
+    await db.query(
+      `UPDATE wager_transactions SET next_reference_attempt_at = '2100-01-01T00:00:00Z'
+        WHERE id IN (${idList})`,
+      pendingIds,
+    );
     const workers = await spawnWorkers(3);
+    await waitUntil(() =>
+      workers.every(
+        (worker) =>
+          worker.output('"event":"pending_worker.started"').length > 0,
+      ),
+    );
+    const released = await db.query(
+      `UPDATE wager_transactions SET next_reference_attempt_at = now() - interval '1 second'
+        WHERE id IN (${idList}) AND status = 'PENDING_REFERENCE'
+        RETURNING id`,
+      pendingIds,
+    );
+    expect(released).toHaveLength(30);
     await waitUntil(async () => {
       for (const wallet of wallets) {
         if (!(await noPendingFor(wallet.id)())) {
@@ -329,15 +350,37 @@ describe('pending reference workers in independent Bun processes', () => {
       }
       return true;
     }, 60_000);
-    const shares = workers.map(
-      (worker) => worker.output('"result":"PROCESSED"').length,
-    );
-    expect(shares.reduce((sum, value) => sum + value, 0)).toBe(30);
-    expect(shares.filter((share) => share > 0).length).toBeGreaterThanOrEqual(
-      2,
-    );
+    expect(new Set(workers.map((worker) => worker.pid)).size).toBe(3);
+    for (const worker of workers) {
+      expect(process.kill(worker.pid, 0)).toBe(true);
+      expect(worker.output('"result":"UNEXPECTED_FAILURE"')).toHaveLength(0);
+    }
+    for (const transactionId of pendingIds) {
+      const applied = workers.flatMap((worker) =>
+        worker
+          .output('"result":"PROCESSED"')
+          .filter((line) => line.includes(transactionId)),
+      );
+      expect(applied).toHaveLength(1);
+    }
+    expect(
+      await count(
+        `wager_transactions WHERE id IN (${idList}) AND status = 'PROCESSED'`,
+        pendingIds,
+      ),
+    ).toBe(30);
+    expect(
+      await count(
+        `wallet_ledger_entries WHERE transaction_id IN (${idList}) AND direction = 'CREDIT'`,
+        pendingIds,
+      ),
+    ).toBe(30);
     for (const wallet of wallets) {
       expect(await balance(db, wallet.id)).toBe('100.00');
+      expect(
+        await count('wallet_ledger_entries WHERE wallet_id = ?', [wallet.id]),
+      ).toBe(3);
+      await walletConsistency(wallet.id);
     }
   });
 

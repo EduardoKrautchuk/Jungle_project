@@ -6,7 +6,6 @@ import {
   applyDebit,
   brl,
   deferred,
-  outboxEvent,
   persistOpenedWallet,
   sha256,
   sleep,
@@ -314,43 +313,5 @@ describe('concurrency across independent connection pools', () => {
       balance: '75.00',
       version: 2,
     });
-  });
-
-  it('hands disjoint outbox batches to concurrent publishers with SKIP LOCKED', async () => {
-    await instanceA.run(async (r) => {
-      for (let i = 0; i < 6; i += 1) {
-        await r.outbox.enqueue(
-          outboxEvent(`aggregate-${i}`, 'WagerTransactionProcessed'),
-        );
-      }
-    });
-    const now = new Date('2026-10-31T13:00:00.000Z');
-    const allDue = (
-      await observer.query(
-        `SELECT id FROM outbox_messages
-         WHERE published_at IS NULL AND next_attempt_at <= ?`,
-        [now.toISOString()],
-      )
-    ).map((row) => String(row.id));
-    const firstBatchLocked = deferred<string[]>();
-    const release = deferred();
-
-    const publisherA = instanceA.run(async (r) => {
-      const batch = (await r.outbox.lockDue(now, 3)).map((m) => m.id);
-      firstBatchLocked.resolve(batch);
-      await release.promise;
-      return batch;
-    });
-    const batchA = await firstBatchLocked.promise;
-    const batchB = (
-      await instanceB.run((r) => r.outbox.lockDue(now, 10_000))
-    ).map((m) => m.id);
-    release.resolve();
-    await publisherA;
-
-    expect(allDue.length).toBeGreaterThanOrEqual(6);
-    expect(batchA).toHaveLength(3);
-    expect(batchA.filter((id) => batchB.includes(id))).toEqual([]);
-    expect([...batchA, ...batchB].sort()).toEqual([...allDue].sort());
   });
 });

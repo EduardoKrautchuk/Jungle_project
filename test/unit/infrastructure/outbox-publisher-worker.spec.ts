@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'bun:test';
 import { PublishOutboxBatch } from '../../../src/application/outbox/publish-outbox-batch.js';
+import { recordEvent } from '../../../src/infrastructure/observability/metered-log.js';
+import {
+  METRIC,
+  Metrics,
+} from '../../../src/infrastructure/observability/metrics.js';
 import { OutboxPublisherWorker } from '../../../src/infrastructure/outbox/outbox-publisher-worker.js';
 import { MemoryLog } from '../../messaging/support.js';
 import {
@@ -97,6 +102,16 @@ describe('OutboxPublisherWorker', () => {
       result: 'PUBLISHED',
     });
     expect(JSON.stringify(log.entries)).not.toContain('"amount"');
+    const metrics = new Metrics();
+    for (const entry of log.entries) {
+      recordEvent(metrics, entry.event, entry.fields);
+    }
+    expect(
+      metrics.counterValue(METRIC.operations, {
+        source: 'outbox_publisher',
+        result: 'PUBLISHED',
+      }),
+    ).toBe(1);
   });
 
   it('backs off exponentially while the store is unavailable and then recovers', async () => {

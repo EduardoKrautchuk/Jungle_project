@@ -4,13 +4,26 @@ import {
   Inject,
   ServiceUnavailableException,
 } from '@nestjs/common';
+import { SqsHealthIndicator } from '../messaging/sqs-health.indicator.js';
 import { DatabaseHealthIndicator } from '../persistence/database-health.indicator.js';
+
+type DependencyStatus = 'up' | 'down';
+
+export interface ReadinessReport {
+  readonly status: 'ok' | 'error';
+  readonly checks: {
+    readonly postgres: DependencyStatus;
+    readonly sqs: DependencyStatus;
+  };
+}
 
 @Controller('health')
 export class HealthController {
   constructor(
     @Inject(DatabaseHealthIndicator)
     private readonly database: DatabaseHealthIndicator,
+    @Inject(SqsHealthIndicator)
+    private readonly sqs: SqsHealthIndicator,
   ) {}
 
   @Get('live')
@@ -19,14 +32,18 @@ export class HealthController {
   }
 
   @Get('ready')
-  async ready(): Promise<{ status: 'ok'; checks: { postgres: 'up' } }> {
-    const postgres = await this.database.check();
-    if (postgres.status === 'down') {
-      throw new ServiceUnavailableException({
-        status: 'error',
-        checks: { postgres: 'down' },
-      });
+  async ready(): Promise<ReadinessReport> {
+    const [postgres, sqs] = await Promise.all([
+      this.database.check(),
+      this.sqs.check(),
+    ]);
+    const report: ReadinessReport = {
+      status: postgres.status === 'up' && sqs.status === 'up' ? 'ok' : 'error',
+      checks: { postgres: postgres.status, sqs: sqs.status },
+    };
+    if (report.status === 'error') {
+      throw new ServiceUnavailableException(report);
     }
-    return { status: 'ok', checks: { postgres: 'up' } };
+    return report;
   }
 }

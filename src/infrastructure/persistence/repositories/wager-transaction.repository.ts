@@ -1,8 +1,4 @@
-import {
-  LockMode,
-  type EntityManager,
-  type FilterQuery,
-} from '@mikro-orm/postgresql';
+import type { EntityManager, FilterQuery } from '@mikro-orm/postgresql';
 import { ConcurrencyConflictError } from '../../../application/ports/persistence.errors.js';
 import type {
   PendingReferenceCandidate,
@@ -124,26 +120,6 @@ export class MikroOrmWagerTransactionRepository implements WagerTransactionRepos
         $in: [WagerTransactionKind.Refund, WagerTransactionKind.Rollback],
       },
     });
-  }
-
-  async lockDuePendingReferences(
-    now: Date,
-    limit: number,
-  ): Promise<StoredWagerTransaction[]> {
-    const records = await this.em.find(
-      WagerTransactionSchema,
-      {
-        status: WagerTransactionStatus.PendingReference,
-        nextReferenceAttemptAt: { $lte: now },
-      },
-      {
-        orderBy: { nextReferenceAttemptAt: 'asc', id: 'asc' },
-        limit,
-        lockMode: LockMode.PESSIMISTIC_PARTIAL_WRITE,
-        disableIdentityMap: true,
-      },
-    );
-    return records.map(toStoredTransaction);
   }
 
   async listDuePendingReferences(

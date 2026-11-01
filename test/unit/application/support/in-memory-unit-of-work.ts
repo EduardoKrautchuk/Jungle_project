@@ -263,16 +263,6 @@ export class InMemoryUnitOfWork implements UnitOfWork {
               (r.kind === WagerTransactionKind.Refund ||
                 r.kind === WagerTransactionKind.Rollback),
           ),
-        lockDuePendingReferences: async (now, limit) =>
-          t.transactions
-            .filter(
-              (r) =>
-                r.status === WagerTransactionStatus.PendingReference &&
-                r.nextReferenceAttemptAt !== null &&
-                r.nextReferenceAttemptAt <= now,
-            )
-            .slice(0, limit)
-            .map(toStoredTransaction),
         listDuePendingReferences: async (now, limit) =>
           t.transactions
             .filter(
@@ -357,24 +347,11 @@ export class InMemoryUnitOfWork implements UnitOfWork {
           fail('outbox.enqueue');
           t.outbox.push(fromOutboxMessage(message));
         },
-        findById: async (id) => {
-          const record = t.outbox.find((r) => r.id === id);
-          return record ? toOutboxMessage(record) : undefined;
-        },
         findLatestByAggregate: async (aggregateId) => {
           const record = t.outbox
             .filter((r) => r.aggregateId === aggregateId)
             .at(-1);
           return record ? toOutboxMessage(record) : undefined;
-        },
-        lockDue: async (now, limit) =>
-          t.outbox
-            .filter((r) => r.publishedAt === null && r.nextAttemptAt <= now)
-            .slice(0, limit)
-            .map(toOutboxMessage),
-        save: async (message) => {
-          const index = t.outbox.findIndex((r) => r.id === message.id);
-          t.outbox[index] = fromOutboxMessage(message);
         },
       },
     };

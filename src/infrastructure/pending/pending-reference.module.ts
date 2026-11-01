@@ -20,13 +20,19 @@ import {
   JsonLinesLog,
   type StructuredLog,
 } from '../observability/structured-log.js';
+import { MeteredLog } from '../observability/metered-log.js';
+import type { Metrics } from '../observability/metrics.js';
+import {
+  METRICS,
+  ObservabilityModule,
+} from '../observability/observability.module.js';
 import { PendingReferenceWorker } from './pending-reference-worker.js';
 
 export const PENDING_WORKER_CONFIG = Symbol('PENDING_WORKER_CONFIG');
 export const PENDING_WORKER_LOG = Symbol('PENDING_WORKER_LOG');
 
 @Module({
-  imports: [WageringModule],
+  imports: [WageringModule, ObservabilityModule],
   providers: [
     {
       provide: PENDING_WORKER_CONFIG,
@@ -34,7 +40,9 @@ export const PENDING_WORKER_LOG = Symbol('PENDING_WORKER_LOG');
     },
     {
       provide: PENDING_WORKER_LOG,
-      useFactory: () => new JsonLinesLog('pending-reference-worker'),
+      inject: [METRICS],
+      useFactory: (metrics: Metrics) =>
+        new MeteredLog(new JsonLinesLog('pending-reference-worker'), metrics),
     },
     {
       provide: ResolvePendingReference,
@@ -87,6 +95,7 @@ export const PENDING_WORKER_LOG = Symbol('PENDING_WORKER_LOG');
     PendingReferenceWorker,
     ResolvePendingReference,
     PENDING_WORKER_LOG,
+    ObservabilityModule,
   ],
 })
 export class PendingReferenceModule {}

@@ -860,7 +860,7 @@ describe('queries', () => {
     expect((await t.http().get('/health/live')).status).toBe(200);
     expect(json((await t.http().get('/health/ready')).body)).toEqual({
       status: 'ok',
-      checks: { postgres: 'up' },
+      checks: { postgres: 'up', sqs: 'up' },
     });
   });
 });

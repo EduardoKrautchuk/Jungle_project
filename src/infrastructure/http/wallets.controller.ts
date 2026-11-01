@@ -5,7 +5,6 @@ import {
   Headers,
   HttpCode,
   Inject,
-  Logger,
   Param,
   Post,
   Query,
@@ -33,17 +32,18 @@ import {
   parseLedgerQuery,
 } from './validation/request-parsers.js';
 import { readUuid } from '../validation/request-reader.js';
+import type { StructuredLog } from '../observability/structured-log.js';
 import { ProviderAuthGuard } from './auth/provider-auth.guard.js';
+import { HTTP_LOG } from './http-observability.interceptor.js';
 
 @Controller('wallets')
 @UseGuards(ProviderAuthGuard)
 export class WalletsController {
-  private readonly logger = new Logger(WalletsController.name);
-
   constructor(
     @Inject(CreateWallet) private readonly createWallet: CreateWallet,
     @Inject(WalletQueries) private readonly queries: WalletQueries,
     @Inject(ID_GENERATOR) private readonly ids: IdGenerator,
+    @Inject(HTTP_LOG) private readonly log: StructuredLog,
   ) {}
 
   @Post()
@@ -87,15 +87,15 @@ export class WalletsController {
     @Param('walletId') walletId: string,
   ): Promise<ReconciliationResponse> {
     const report = await this.queries.reconcile(readUuid(walletId, 'walletId'));
-    if (!report.consistent) {
-      this.logger.warn(
-        JSON.stringify({
-          event: 'wallet.reconciliation.divergence',
-          walletId: report.walletId,
-          checkedEntries: report.checkedEntries,
-        }),
-      );
-    }
+    this.log.write(
+      report.consistent ? 'info' : 'warn',
+      'wallet.reconciliation',
+      {
+        walletId: report.walletId,
+        consistent: report.consistent,
+        checkedEntries: report.checkedEntries,
+      },
+    );
     return presentReconciliation(report);
   }
 }

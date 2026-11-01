@@ -1,7 +1,41 @@
 import { describe, expect, it } from 'bun:test';
 import { InvalidConfigurationError } from '../../../../src/infrastructure/config/database.config.js';
+import { readFileSync } from 'node:fs';
+import { loadDatabaseConfig } from '../../../../src/infrastructure/config/database.config.js';
 import { loadOutboxPublisherConfig } from '../../../../src/infrastructure/config/outbox.config.js';
+import { loadPendingReferenceConfig } from '../../../../src/infrastructure/config/pending-reference.config.js';
 import { loadSqsConfig } from '../../../../src/infrastructure/config/sqs.config.js';
+import { loadMetricsPort } from '../../../../src/infrastructure/observability/metrics-server.js';
+
+function envExample(): Record<string, string> {
+  const env: Record<string, string> = {};
+  const file = new URL('../../../../.env.example', import.meta.url);
+  for (const line of readFileSync(file, 'utf8').split('\n')) {
+    const separator = line.indexOf('=');
+    if (separator > 0 && !line.startsWith('#')) {
+      env[line.slice(0, separator).trim()] = line.slice(separator + 1).trim();
+    }
+  }
+  return env;
+}
+
+describe('configuration defaults', () => {
+  it.each([
+    ['the built-in defaults', {}],
+    ['.env.example', envExample()],
+  ])('starts every process with %s', (_, env: Record<string, string>) => {
+    const sqs = loadSqsConfig(env);
+    expect(() =>
+      loadOutboxPublisherConfig(env, sqs.requestTimeoutMs),
+    ).not.toThrow();
+    expect(() => loadPendingReferenceConfig(env)).not.toThrow();
+    expect(() => loadMetricsPort(env)).not.toThrow();
+  });
+
+  it('starts the database configuration from .env.example', () => {
+    expect(() => loadDatabaseConfig(envExample(), 'test')).not.toThrow();
+  });
+});
 
 describe('loadSqsConfig', () => {
   it('defaults to the challenge queue names and AWS credential chain', () => {
@@ -52,7 +86,7 @@ describe('event queue and publisher configuration', () => {
 
   it('requires a lease longer than two send timeouts', () => {
     expect(loadOutboxPublisherConfig({}, 5_000)).toMatchObject({
-      leaseMs: 30_000,
+      leaseMs: 60_000,
       maxGroups: 10,
       maxPerGroup: 10,
     });

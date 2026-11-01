@@ -2,7 +2,7 @@ import {
   Catch,
   HttpException,
   HttpStatus,
-  Logger,
+  Inject,
   type ArgumentsHost,
   type ExceptionFilter,
 } from '@nestjs/common';
@@ -17,6 +17,8 @@ import {
   ConcurrencyConflictError,
   PersistenceUnavailableError,
 } from '../../application/ports/persistence.errors.js';
+import type { StructuredLog } from '../observability/structured-log.js';
+import { HTTP_LOG } from './http-observability.interceptor.js';
 
 export interface ApiErrorBody {
   error: {
@@ -65,7 +67,7 @@ const UNAVAILABLE_RETRY_AFTER_SECONDS = '5';
 
 @Catch()
 export class ApiExceptionFilter implements ExceptionFilter {
-  private readonly logger = new Logger(ApiExceptionFilter.name);
+  constructor(@Inject(HTTP_LOG) private readonly log: StructuredLog) {}
 
   catch(exception: unknown, host: ArgumentsHost): void {
     const response = host.switchToHttp().getResponse<Response>();
@@ -82,9 +84,6 @@ export class ApiExceptionFilter implements ExceptionFilter {
     }
 
     if (exception instanceof ConcurrencyConflictError) {
-      this.logger.warn(
-        JSON.stringify({ event: 'request.concurrency_conflict' }),
-      );
       response
         .setHeader('Retry-After', LOCK_CONFLICT_RETRY_AFTER_SECONDS)
         .status(HttpStatus.SERVICE_UNAVAILABLE)
@@ -98,9 +97,6 @@ export class ApiExceptionFilter implements ExceptionFilter {
     }
 
     if (exception instanceof PersistenceUnavailableError) {
-      this.logger.error(
-        JSON.stringify({ event: 'request.persistence_unavailable' }),
-      );
       response
         .setHeader('Retry-After', UNAVAILABLE_RETRY_AFTER_SECONDS)
         .status(HttpStatus.SERVICE_UNAVAILABLE)
@@ -137,13 +133,9 @@ export class ApiExceptionFilter implements ExceptionFilter {
       return;
     }
 
-    this.logger.error(
-      JSON.stringify({
-        event: 'request.unexpected_error',
-        error: exception instanceof Error ? exception.name : typeof exception,
-      }),
-      exception instanceof Error ? exception.stack : undefined,
-    );
+    this.log.write('error', 'http.unexpected_error', {
+      errorName: exception instanceof Error ? exception.name : typeof exception,
+    });
     response
       .status(HttpStatus.INTERNAL_SERVER_ERROR)
       .json(errorBody('INTERNAL_ERROR', 'Internal server error'));

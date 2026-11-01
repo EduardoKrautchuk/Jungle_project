@@ -12,6 +12,12 @@ import {
   JsonLinesLog,
   type StructuredLog,
 } from '../observability/structured-log.js';
+import { MeteredLog } from '../observability/metered-log.js';
+import type { Metrics } from '../observability/metrics.js';
+import {
+  METRICS,
+  ObservabilityModule,
+} from '../observability/observability.module.js';
 import { createSqsClient, resolveWagerQueueUrls } from './sqs-client.js';
 import { SqsWagerConsumer } from './sqs-wager-consumer.js';
 import { SqsWagerQueue } from './sqs-wager-queue.js';
@@ -32,7 +38,7 @@ class SqsClientLifecycle implements OnApplicationShutdown {
 }
 
 @Module({
-  imports: [WageringModule],
+  imports: [WageringModule, ObservabilityModule],
   providers: [
     { provide: SQS_CONFIG, useFactory: () => loadSqsConfig(process.env) },
     {
@@ -43,7 +49,9 @@ class SqsClientLifecycle implements OnApplicationShutdown {
     SqsClientLifecycle,
     {
       provide: CONSUMER_LOG,
-      useFactory: () => new JsonLinesLog('wager-consumer'),
+      inject: [METRICS],
+      useFactory: (metrics: Metrics) =>
+        new MeteredLog(new JsonLinesLog('wager-consumer'), metrics),
     },
     {
       provide: WAGER_QUEUE,
@@ -85,6 +93,6 @@ class SqsClientLifecycle implements OnApplicationShutdown {
         ),
     },
   ],
-  exports: [SqsWagerConsumer, SQS_CONFIG, CONSUMER_LOG],
+  exports: [SqsWagerConsumer, SQS_CONFIG, CONSUMER_LOG, ObservabilityModule],
 })
 export class MessagingModule {}

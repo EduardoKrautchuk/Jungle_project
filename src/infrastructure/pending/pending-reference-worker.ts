@@ -11,6 +11,7 @@ import type {
   LogLevel,
   StructuredLog,
 } from '../observability/structured-log.js';
+import { settleWithin, sleep } from '../runtime/worker-loop.js';
 
 export interface PendingWorkerOptions {
   readonly workerId: string;
@@ -177,39 +178,4 @@ function codeOf(error: unknown): string {
     return error.code;
   }
   return error instanceof Error ? error.name : 'UNKNOWN_ERROR';
-}
-
-function sleep(ms: number, signal: AbortSignal): Promise<void> {
-  return new Promise((resolve) => {
-    if (signal.aborted) {
-      resolve();
-      return;
-    }
-    const timer = setTimeout(done, ms);
-    function done(): void {
-      clearTimeout(timer);
-      signal.removeEventListener('abort', done);
-      resolve();
-    }
-    signal.addEventListener('abort', done, { once: true });
-  });
-}
-
-async function settleWithin(
-  work: Promise<void>,
-  timeoutMs: number,
-): Promise<boolean> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const timeout = new Promise<false>((resolve) => {
-    timer = setTimeout(() => resolve(false), timeoutMs);
-  });
-  const result = await Promise.race([
-    work.then(
-      () => true,
-      () => true,
-    ),
-    timeout,
-  ]);
-  clearTimeout(timer);
-  return result;
 }

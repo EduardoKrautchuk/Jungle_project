@@ -49,7 +49,7 @@ export function loadOutboxPublisherConfig(
       'OUTBOX_PUBLISHER_ID must be 1 to 128 letters, digits, ".", "_", ":" or "-"',
     );
   }
-  const leaseMs = integer('OUTBOX_LEASE_MS', 30_000, 1_000, 600_000);
+  const leaseMs = integer('OUTBOX_LEASE_MS', 60_000, 1_000, 600_000);
   if (leaseMs <= sendTimeoutMs * 2) {
     problems.push(
       'OUTBOX_LEASE_MS must be greater than twice SQS_REQUEST_TIMEOUT_MS',

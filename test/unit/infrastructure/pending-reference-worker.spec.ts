@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'bun:test';
 import { ResolvePendingReference } from '../../../src/application/wagering/resolve-pending-reference.js';
+import { recordEvent } from '../../../src/infrastructure/observability/metered-log.js';
+import {
+  METRIC,
+  Metrics,
+} from '../../../src/infrastructure/observability/metrics.js';
 import { PendingReferenceWorker } from '../../../src/infrastructure/pending/pending-reference-worker.js';
 import { MemoryLog } from '../../messaging/support.js';
 import {
@@ -71,6 +76,16 @@ describe('PendingReferenceWorker', () => {
     expect(typeof log.events('pending.resolution')[0]?.fields.durationMs).toBe(
       'number',
     );
+    const metrics = new Metrics();
+    for (const entry of log.entries) {
+      recordEvent(metrics, entry.event, entry.fields);
+    }
+    expect(
+      metrics.counterValue(METRIC.operations, {
+        source: 'pending_worker',
+        result: 'PROCESSED',
+      }),
+    ).toBe(1);
   });
 
   it('logs failures without consuming the attempt and keeps polling', async () => {

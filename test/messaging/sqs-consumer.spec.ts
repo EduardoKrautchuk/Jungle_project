@@ -17,6 +17,11 @@ import { MikroORM } from '@mikro-orm/postgresql';
 import { loadDatabaseConfig } from '../../src/infrastructure/config/database.config.js';
 import { ensureWagerQueues } from '../../src/infrastructure/messaging/sqs-queue-provisioner.js';
 import { SqsWagerQueue } from '../../src/infrastructure/messaging/sqs-wager-queue.js';
+import { recordEvent } from '../../src/infrastructure/observability/metered-log.js';
+import {
+  METRIC,
+  Metrics,
+} from '../../src/infrastructure/observability/metrics.js';
 import { createMikroOrmConfig } from '../../src/infrastructure/persistence/mikro-orm.config.js';
 import {
   Db,
@@ -142,6 +147,14 @@ async function processAll(
     }
     return queueEmpty(queues.queueUrl)();
   });
+}
+
+function metricsOf(harness: Harness): Metrics {
+  const metrics = new Metrics();
+  for (const entry of harness.log.entries) {
+    recordEvent(metrics, entry.event, entry.fields);
+  }
+  return metrics;
 }
 
 function results(harness: Harness): string[] {
@@ -412,6 +425,19 @@ describe('deduplication', () => {
     expect(await inboxCount(message.messageId)).toBe(1);
     expect(results(harness).sort()).toEqual(['DUPLICATE_MESSAGE', 'PROCESSED']);
     expect(await balanceOf(db, wallet.id)).toBe('75.00');
+    const metrics = metricsOf(harness);
+    expect(
+      metrics.counterValue(METRIC.duplicates, {
+        source: 'sqs',
+        kind: 'inbox_duplicate',
+      }),
+    ).toBe(1);
+    expect(
+      metrics.counterValue(METRIC.operations, {
+        source: 'sqs',
+        result: 'PROCESSED',
+      }),
+    ).toBe(1);
   });
 
   it('dead-letters a known messageId carrying a different payload', async () => {
@@ -441,6 +467,12 @@ describe('deduplication', () => {
     expect(deadLetter?.body).toBe(JSON.stringify(tampered));
     expect(await debitCount(wallet.id)).toBe(1);
     expect(await balanceOf(db, wallet.id)).toBe('75.00');
+    expect(
+      metricsOf(harness).counterValue(METRIC.deadLetters, {
+        component: 'sqs',
+        reason: 'MESSAGE_PAYLOAD_MISMATCH',
+      }),
+    ).toBe(1);
     const [row] = await db.query(
       'SELECT payload_hash FROM inbox_messages WHERE message_id = ?',
       [original.messageId],
@@ -463,6 +495,12 @@ describe('deduplication', () => {
     expect(await debitCount(wallet.id)).toBe(1);
     expect(await transactionsOf(wallet.id)).toHaveLength(1);
     expect(results(harness)).toEqual(['PROCESSED', 'REPLAYED']);
+    expect(
+      metricsOf(harness).counterValue(METRIC.duplicates, {
+        source: 'sqs',
+        kind: 'idempotent_replay',
+      }),
+    ).toBe(1);
     expect(await inboxCount(first.messageId)).toBe(1);
     expect(await inboxCount(second.messageId)).toBe(1);
   });
@@ -599,6 +637,16 @@ describe('failures and acknowledgement', () => {
       receiveCount: 1,
       retryInSeconds: 1,
     });
+    const failedAttempt = metricsOf(harness);
+    expect(
+      failedAttempt.counterValue(METRIC.retries, {
+        component: 'sqs',
+        reason: 'PERSISTENCE_CONCURRENCY_CONFLICT',
+      }),
+    ).toBe(1);
+    expect(
+      failedAttempt.counterValue(METRIC.lockConflicts, { source: 'sqs' }),
+    ).toBe(1);
     expect(await inboxCount(message.messageId)).toBe(0);
     expect(await transactionsOf(wallet.id)).toHaveLength(0);
     expect(await balanceOf(db, wallet.id)).toBe('100.00');

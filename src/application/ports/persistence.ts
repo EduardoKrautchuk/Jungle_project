@@ -70,10 +70,6 @@ export interface WagerTransactionRepository {
   findProcessedReversalOf(
     referenceTransactionId: string,
   ): Promise<StoredWagerTransaction | undefined>;
-  lockDuePendingReferences(
-    now: Date,
-    limit: number,
-  ): Promise<StoredWagerTransaction[]>;
   listDuePendingReferences(
     now: Date,
     limit: number,
@@ -104,12 +100,9 @@ export interface InboxRepository {
 
 export interface OutboxRepository {
   enqueue(message: OutboxMessage): Promise<void>;
-  findById(id: string): Promise<OutboxMessage | undefined>;
-  lockDue(now: Date, limit: number): Promise<OutboxMessage[]>;
   findLatestByAggregate(
     aggregateId: string,
   ): Promise<OutboxMessage | undefined>;
-  save(message: OutboxMessage): Promise<void>;
 }
 
 export interface TransactionalRepositories {

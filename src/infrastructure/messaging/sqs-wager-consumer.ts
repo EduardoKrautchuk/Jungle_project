@@ -4,6 +4,7 @@ import type {
   WagerMessageProcessor,
 } from './wager-message-processor.js';
 import type { QueueMessage, WagerQueue } from './wager-queue.js';
+import { settleWithin, sleep } from '../runtime/worker-loop.js';
 
 export interface ConsumerOptions {
   readonly consumerName: string;
@@ -320,39 +321,4 @@ function errorCodeOf(error: unknown): string {
 
 function elapsed(startedAt: number): number {
   return Math.round(performance.now() - startedAt);
-}
-
-function sleep(ms: number, signal: AbortSignal): Promise<void> {
-  return new Promise((resolve) => {
-    if (signal.aborted) {
-      resolve();
-      return;
-    }
-    const timer = setTimeout(done, ms);
-    function done(): void {
-      clearTimeout(timer);
-      signal.removeEventListener('abort', done);
-      resolve();
-    }
-    signal.addEventListener('abort', done, { once: true });
-  });
-}
-
-async function settleWithin(
-  work: Promise<void>,
-  timeoutMs: number,
-): Promise<boolean> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const timeout = new Promise<false>((resolve) => {
-    timer = setTimeout(() => resolve(false), timeoutMs);
-  });
-  const result = await Promise.race([
-    work.then(
-      () => true,
-      () => true,
-    ),
-    timeout,
-  ]);
-  clearTimeout(timer);
-  return result;
 }

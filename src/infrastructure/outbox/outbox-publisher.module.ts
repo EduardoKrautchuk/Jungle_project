@@ -32,6 +32,12 @@ import {
   JsonLinesLog,
   type StructuredLog,
 } from '../observability/structured-log.js';
+import { MeteredLog } from '../observability/metered-log.js';
+import type { Metrics } from '../observability/metrics.js';
+import {
+  METRICS,
+  ObservabilityModule,
+} from '../observability/observability.module.js';
 import { SqlOutboxPublicationStore } from '../persistence/outbox-publication.store.js';
 import { SystemClock, UuidV7Generator } from '../runtime/system-runtime.js';
 import { OutboxPublisherWorker } from './outbox-publisher-worker.js';
@@ -55,6 +61,7 @@ class PublisherSqsClientLifecycle implements OnApplicationShutdown {
 }
 
 @Module({
+  imports: [ObservabilityModule],
   providers: [
     { provide: CLOCK, useClass: SystemClock },
     { provide: ID_GENERATOR, useClass: UuidV7Generator },
@@ -94,7 +101,9 @@ class PublisherSqsClientLifecycle implements OnApplicationShutdown {
     },
     {
       provide: PUBLISHER_LOG,
-      useFactory: () => new JsonLinesLog('outbox-publisher'),
+      inject: [METRICS],
+      useFactory: (metrics: Metrics) =>
+        new MeteredLog(new JsonLinesLog('outbox-publisher'), metrics),
     },
     {
       provide: PublishOutboxBatch,
@@ -148,6 +157,7 @@ class PublisherSqsClientLifecycle implements OnApplicationShutdown {
     OUTBOX_PUBLICATION_STORE,
     EVENT_TRANSPORT,
     OUTBOX_PUBLISHER_CONFIG,
+    ObservabilityModule,
   ],
 })
 export class OutboxPublisherModule {}

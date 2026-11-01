@@ -388,7 +388,7 @@ describe('MikroORM repositories', () => {
       );
     });
 
-    it('locks due pending references in schedule order', async () => {
+    it('lists due pending references without locking them', async () => {
       const wallet = await persistOpenedWallet(uow);
       const pending = (minutes: number) => {
         const refund = wagerTransaction(wallet, {
@@ -408,19 +408,19 @@ describe('MikroORM repositories', () => {
         await r.transactions.insert(later);
         await r.transactions.insert(due);
       });
-      const locked = await uow.run((r) =>
-        r.transactions.lockDuePendingReferences(NOW, 10),
+      const candidates = await uow.run((r) =>
+        r.transactions.listDuePendingReferences(NOW, 10, 'worker-1'),
       );
-      const ids = locked.map((s) => s.transaction.id);
+      const ids = candidates.map((c) => c.transactionId);
       expect(ids).toContain(due.transaction.id);
       expect(ids).not.toContain(later.transaction.id);
-      const restored = locked.find(
-        (s) => s.transaction.id === due.transaction.id,
-      );
-      expect(restored?.referenceAttempts).toBe(1);
-      expect(restored?.nextReferenceAttemptAt).toEqual(
-        due.nextReferenceAttemptAt,
-      );
+      expect(
+        candidates.find((c) => c.transactionId === due.transaction.id),
+      ).toEqual({
+        transactionId: due.transaction.id,
+        walletId: wallet.id,
+        referenceAttempts: 1,
+      });
     });
   });
 
@@ -548,36 +548,21 @@ describe('MikroORM repositories', () => {
   });
 
   describe('outbox', () => {
-    it('persists, reschedules and publishes an event', async () => {
-      const event = outboxEvent(randomUUID(), 'WalletBalanceChanged');
+    it('persists an event and finds it by aggregate', async () => {
+      const aggregateId = randomUUID();
+      const event = outboxEvent(aggregateId, 'WagerTransactionProcessed');
       await uow.run((r) => r.outbox.enqueue(event));
 
-      const due = await uow.run((r) => r.outbox.lockDue(LATER, 100));
-      const restored = due.find((m) => m.id === event.id);
-      expect(restored?.payload).toEqual(event.payload);
-      expect(restored?.attempts).toBe(0);
-
-      restored?.scheduleRetry(LATER);
-      if (restored) {
-        await uow.run((r) => r.outbox.save(restored));
-      }
-      const retried = await uow.run((r) => r.outbox.findById(event.id));
-      expect(retried?.attempts).toBe(1);
-      expect(retried?.nextAttemptAt).toEqual(new Date(LATER.getTime() + 1000));
+      const latest = await uow.run((r) =>
+        r.outbox.findLatestByAggregate(aggregateId),
+      );
+      expect(latest?.id).toBe(event.id);
+      expect(latest?.payload).toEqual(event.payload);
+      expect(latest?.attempts).toBe(0);
+      expect(latest?.isPending()).toBe(true);
       expect(
-        (await uow.run((r) => r.outbox.lockDue(LATER, 100))).map((m) => m.id),
-      ).not.toContain(event.id);
-
-      retried?.markPublished(new Date(LATER.getTime() + 2000));
-      if (retried) {
-        await uow.run((r) => r.outbox.save(retried));
-        await expectRejection(
-          uow.run((r) => r.outbox.save(retried)),
-          ConcurrencyConflictError,
-        );
-      }
-      const published = await uow.run((r) => r.outbox.findById(event.id));
-      expect(published?.isPending()).toBe(false);
+        await uow.run((r) => r.outbox.findLatestByAggregate(randomUUID())),
+      ).toBeUndefined();
     });
   });
 });

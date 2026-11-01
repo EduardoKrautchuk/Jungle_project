@@ -1,15 +1,22 @@
 import type { MikroORM } from '@mikro-orm/postgresql';
-
-export type DatabaseHealth =
-  | { readonly status: 'up' }
-  | { readonly status: 'down'; readonly reason: string };
+import {
+  DEFAULT_HEALTH_TIMEOUT_MS,
+  type DependencyHealth,
+} from '../observability/dependency-health.js';
+import { withTimeout } from '../observability/with-timeout.js';
 
 export class DatabaseHealthIndicator {
-  constructor(private readonly orm: MikroORM) {}
+  constructor(
+    private readonly orm: MikroORM,
+    private readonly timeoutMs = DEFAULT_HEALTH_TIMEOUT_MS,
+  ) {}
 
-  async check(): Promise<DatabaseHealth> {
+  async check(): Promise<DependencyHealth> {
     try {
-      await this.orm.em.getConnection().execute('SELECT 1');
+      await withTimeout(
+        () => this.orm.em.getConnection().execute('SELECT 1'),
+        this.timeoutMs,
+      );
       return { status: 'up' };
     } catch (error) {
       return {
