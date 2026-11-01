@@ -19,14 +19,19 @@ import {
   type WagerTransactionRecord,
 } from '../schemas.js';
 
+const CLAIMABLE_STATUSES: ReadonlySet<WagerTransactionStatus> = new Set([
+  WagerTransactionStatus.Pending,
+  WagerTransactionStatus.Rejected,
+]);
+
 export class MikroOrmWagerTransactionRepository implements WagerTransactionRepository {
   constructor(private readonly em: EntityManager) {}
 
   async claim(stored: StoredWagerTransaction): Promise<IdempotencyClaim> {
     const { transaction } = stored;
-    if (transaction.status !== WagerTransactionStatus.Pending) {
+    if (!CLAIMABLE_STATUSES.has(transaction.status)) {
       throw new ConcurrencyConflictError(
-        'only PENDING transactions can claim an idempotency key',
+        'only PENDING or REJECTED transactions can claim an idempotency key',
       );
     }
     const result = await this.em

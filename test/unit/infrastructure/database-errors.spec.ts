@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'bun:test';
 import {
   ConcurrencyConflictError,
+  PersistenceUnavailableError,
   IntegrityConstraintViolationError,
   UniqueConstraintViolationError,
 } from '../../../src/application/ports/persistence.errors.js';
@@ -44,13 +45,33 @@ describe('translateDatabaseError', () => {
   it('keeps unrelated errors untouched', () => {
     const syntax = pgError('42601');
     const plain = new Error('boom');
-    const nodeError = Object.assign(new Error('refused'), {
-      code: 'ECONNREFUSED',
-    });
+    const unknownCode = Object.assign(new Error('odd'), { code: 'EWHATEVER' });
     expect(translateDatabaseError(syntax)).toBe(syntax);
     expect(translateDatabaseError(plain)).toBe(plain);
-    expect(translateDatabaseError(nodeError)).toBe(nodeError);
+    expect(translateDatabaseError(unknownCode)).toBe(unknownCode);
   });
+
+  it.each([['08006'], ['08001'], ['57P01'], ['53300']])(
+    'maps %s to a retryable unavailability',
+    (code) => {
+      const error = pgError(code);
+      const translated = translateDatabaseError(error);
+      expect(translated).toBeInstanceOf(PersistenceUnavailableError);
+      if (translated instanceof PersistenceUnavailableError) {
+        expect(translated.cause).toBe(error);
+      }
+    },
+  );
+
+  it.each([['ECONNREFUSED'], ['ECONNRESET'], ['ETIMEDOUT']])(
+    'maps the network failure %s to a retryable unavailability',
+    (code) => {
+      const nodeError = Object.assign(new Error('network'), { code });
+      expect(translateDatabaseError(nodeError)).toBeInstanceOf(
+        PersistenceUnavailableError,
+      );
+    },
+  );
 
   it('does not wrap an already translated error twice', () => {
     const conflict = new ConcurrencyConflictError('stale version');

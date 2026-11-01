@@ -152,9 +152,60 @@ describe('MikroORM repositories', () => {
       );
       expect(error.constraint).toBe('wallets_player_currency_uq');
     });
+
+    it('reads balance and ledger totals from one consistent snapshot', async () => {
+      const wallet = await persistOpenedWallet(uow);
+      await applyDebit(uow, wagerTransaction(wallet, { money: brl('30.25') }));
+      const snapshot = await uow.run((r) =>
+        r.wallets.findBalanceSnapshot(wallet.id),
+      );
+      expect(snapshot?.wallet.balance.toJSON().amount).toBe('69.75');
+      expect(snapshot?.ledgerBalance.toJSON().amount).toBe('69.75');
+      expect(snapshot?.ledgerEntries).toBe(2);
+    });
+
+    it('reports zero totals for a wallet without ledger entries', async () => {
+      const wallet = await persistOpenedWallet(uow, '0.00');
+      const snapshot = await uow.run((r) =>
+        r.wallets.findBalanceSnapshot(wallet.id),
+      );
+      expect(snapshot?.ledgerBalance.toJSON().amount).toBe('0.00');
+      expect(snapshot?.ledgerEntries).toBe(0);
+      expect(
+        await uow.run((r) => r.wallets.findBalanceSnapshot(randomUUID())),
+      ).toBeUndefined();
+    });
   });
 
   describe('wager transactions', () => {
+    it('claims an auditable rejection for a wallet that does not exist', async () => {
+      const wallet = await persistOpenedWallet(uow);
+      const transaction = wagerTransaction(wallet, { walletId: randomUUID() });
+      transaction.reject(FailureCode.WalletNotFound);
+      expect(
+        await uow.run((r) => r.transactions.claim(stored(transaction))),
+      ).toEqual({ outcome: 'CREATED' });
+      const [row] = await db.query(
+        'SELECT status, failure_code, wallet_link_id FROM wager_transactions WHERE id = ?',
+        [transaction.id],
+      );
+      expect(row).toEqual({
+        status: 'REJECTED',
+        failure_code: 'WALLET_NOT_FOUND',
+        wallet_link_id: null,
+      });
+    });
+
+    it('refuses to claim a transaction that is already processed', async () => {
+      const wallet = await persistOpenedWallet(uow);
+      const transaction = wagerTransaction(wallet);
+      transaction.markProcessed(undefined, LATER);
+      await expectRejection(
+        uow.run((r) => r.transactions.claim(stored(transaction, brl('1.00')))),
+        ConcurrencyConflictError,
+      );
+    });
+
     it('persists and restores a pending transaction', async () => {
       const wallet = await persistOpenedWallet(uow);
       const transaction = wagerTransaction(wallet, { money: brl('0.01') });

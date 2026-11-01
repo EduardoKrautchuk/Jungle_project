@@ -1,9 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 import { Money } from '../../../src/domain/money/money.js';
-import {
-  CurrencyMismatchError,
-  MoneyOutOfRangeError,
-} from '../../../src/domain/money/money.errors.js';
+import { CurrencyMismatchError } from '../../../src/domain/money/money.errors.js';
 import { LedgerDirection } from '../../../src/domain/ledger/ledger-direction.js';
 import { InvalidLedgerEntryError } from '../../../src/domain/ledger/ledger.errors.js';
 import type { WalletLedgerEntry } from '../../../src/domain/ledger/wallet-ledger-entry.js';
@@ -14,6 +11,7 @@ import {
   type WalletState,
 } from '../../../src/domain/wallet/wallet.js';
 import {
+  BalanceLimitExceededError,
   InsufficientFundsError,
   InvalidWalletError,
 } from '../../../src/domain/wallet/wallet.errors.js';
@@ -302,7 +300,7 @@ describe('Wallet', () => {
       const before = snapshot(wallet);
 
       expect(() => wallet.credit(brl('0.01'), movement())).toThrow(
-        MoneyOutOfRangeError,
+        BalanceLimitExceededError,
       );
       expect(snapshot(wallet)).toEqual(before);
     });

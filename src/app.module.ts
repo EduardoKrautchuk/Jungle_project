@@ -1,8 +1,15 @@
-import { Module } from '@nestjs/common';
+import { Module, type DynamicModule } from '@nestjs/common';
+import type { DatabaseTarget } from './infrastructure/config/database.config.js';
+import { ApiModule } from './infrastructure/http/api.module.js';
 import { HealthModule } from './infrastructure/http/health.module.js';
 import { PersistenceModule } from './infrastructure/persistence/persistence.module.js';
 
-@Module({
-  imports: [PersistenceModule.forRoot(), HealthModule],
-})
-export class AppModule {}
+@Module({})
+export class AppModule {
+  static forRoot(target: DatabaseTarget = 'default'): DynamicModule {
+    return {
+      module: AppModule,
+      imports: [PersistenceModule.forRoot(target), HealthModule, ApiModule],
+    };
+  }
+}

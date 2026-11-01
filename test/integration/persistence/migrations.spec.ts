@@ -126,6 +126,14 @@ const indexDefinition = async (name: string): Promise<string> => {
   return String(row?.definition);
 };
 
+const constraintDefinition = async (name: string): Promise<string> => {
+  const [row] = await db.query(
+    'SELECT pg_get_constraintdef(oid) AS definition FROM pg_constraint WHERE conname = ?',
+    [name],
+  );
+  return String(row?.definition);
+};
+
 const walletLinkColumns = () =>
   names(
     `SELECT column_name AS name FROM information_schema.columns
@@ -197,11 +205,71 @@ describe('migrations', () => {
     );
   });
 
+  it('accepts BALANCE_LIMIT_EXCEEDED as a rejection failure code', async () => {
+    expect(await constraintDefinition('wager_tx_failure_code_ck')).toContain(
+      'BALANCE_LIMIT_EXCEEDED',
+    );
+    const wallet = await db.insertWallet();
+    await db.insertTransaction(wallet, {
+      status: 'REJECTED',
+      failure_code: 'BALANCE_LIMIT_EXCEEDED',
+    });
+    expect(
+      await db.query(
+        "SELECT 1 FROM wager_transactions WHERE failure_code = 'BALANCE_LIMIT_EXCEEDED'",
+      ),
+    ).toHaveLength(1);
+  });
+
+  it('reverts the failure code migration without losing rows that use the new code', async () => {
+    const wallet = await db.insertWallet();
+    await db.insertTransaction(wallet, {
+      status: 'REJECTED',
+      failure_code: 'BALANCE_LIMIT_EXCEEDED',
+    });
+
+    await orm.migrator.down();
+
+    expect(await executed()).toEqual(
+      MIGRATIONS.slice(0, -1).map((m) => m.name),
+    );
+    const definition = await constraintDefinition('wager_tx_failure_code_ck');
+    expect(definition).not.toContain('BALANCE_LIMIT_EXCEEDED');
+    expect(definition).toContain('NOT VALID');
+    expect(
+      await db.query(
+        "SELECT 1 FROM wager_transactions WHERE failure_code = 'BALANCE_LIMIT_EXCEEDED'",
+      ),
+    ).toHaveLength(1);
+    let failure: unknown;
+    try {
+      await db.insertTransaction(wallet, {
+        status: 'REJECTED',
+        failure_code: 'BALANCE_LIMIT_EXCEEDED',
+      });
+    } catch (error) {
+      failure = error;
+    }
+    expect(failure).toBeInstanceOf(Error);
+
+    await orm.migrator.up();
+    expect(
+      await constraintDefinition('wager_tx_failure_code_ck'),
+    ).not.toContain('NOT VALID');
+  });
+
   it('reverts one step at a time in reverse order', async () => {
     const expectExecuted = async (count: number) =>
       expect(await executed()).toEqual(
         MIGRATIONS.slice(0, count).map((m) => m.name),
       );
+
+    await orm.migrator.down();
+    await expectExecuted(3);
+    expect(
+      await constraintDefinition('wager_tx_failure_code_ck'),
+    ).not.toContain('BALANCE_LIMIT_EXCEEDED');
+    expect(await tableConstraints()).toEqual(CONSTRAINTS);
 
     await orm.migrator.down();
     await expectExecuted(2);

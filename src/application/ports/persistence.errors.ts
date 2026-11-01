@@ -1,7 +1,8 @@
 export type PersistenceErrorCode =
   | 'PERSISTENCE_UNIQUE_VIOLATION'
   | 'PERSISTENCE_INTEGRITY_VIOLATION'
-  | 'PERSISTENCE_CONCURRENCY_CONFLICT';
+  | 'PERSISTENCE_CONCURRENCY_CONFLICT'
+  | 'PERSISTENCE_UNAVAILABLE';
 
 export abstract class PersistenceError extends Error {
   protected constructor(
@@ -46,6 +47,16 @@ export class ConcurrencyConflictError extends PersistenceError {
     super(
       'PERSISTENCE_CONCURRENCY_CONFLICT',
       `Concurrency conflict: ${reason}`,
+      options,
+    );
+  }
+}
+
+export class PersistenceUnavailableError extends PersistenceError {
+  constructor(reason: string, options?: ErrorOptions) {
+    super(
+      'PERSISTENCE_UNAVAILABLE',
+      `Persistence unavailable: ${reason}`,
       options,
     );
   }

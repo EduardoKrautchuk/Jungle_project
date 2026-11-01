@@ -8,6 +8,7 @@ import {
 const WORKER_PATH = fileURLToPath(
   new URL('./debit-worker.ts', import.meta.url),
 );
+const SERVER_PATH = fileURLToPath(new URL('./http-server.ts', import.meta.url));
 
 type Child = Bun.Subprocess<'pipe', 'pipe', 'pipe'>;
 
@@ -32,9 +33,23 @@ export class WorkerProcess {
   }
 
   static spawn(name: string, job: WorkerJob): WorkerProcess {
+    return WorkerProcess.start(name, WORKER_PATH, {
+      WORKER_JOB: JSON.stringify(job),
+    });
+  }
+
+  static spawnServer(name: string): WorkerProcess {
+    return WorkerProcess.start(name, SERVER_PATH, {});
+  }
+
+  private static start(
+    name: string,
+    script: string,
+    env: Record<string, string>,
+  ): WorkerProcess {
     const child = Bun.spawn({
-      cmd: [process.execPath, WORKER_PATH],
-      env: { ...process.env, WORKER_JOB: JSON.stringify(job) },
+      cmd: [process.execPath, script],
+      env: { ...process.env, ...env },
       stdin: 'pipe',
       stdout: 'pipe',
       stderr: 'pipe',

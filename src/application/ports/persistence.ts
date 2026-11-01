@@ -27,8 +27,15 @@ export interface LedgerCursor {
   id: string;
 }
 
+export interface WalletBalanceSnapshot {
+  wallet: Wallet;
+  ledgerBalance: Money;
+  ledgerEntries: number;
+}
+
 export interface WalletRepository {
   findById(id: string): Promise<Wallet | undefined>;
+  findBalanceSnapshot(id: string): Promise<WalletBalanceSnapshot | undefined>;
   findByIdForUpdate(id: string): Promise<Wallet | undefined>;
   findByPlayerAndCurrency(
     playerId: string,
