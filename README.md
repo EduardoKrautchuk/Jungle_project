@@ -39,7 +39,7 @@ Toda configuração é validada na partida; um valor inválido encerra o process
 bun run infra:up          # PostgreSQL + LocalStack, aguarda os healthchecks
 bun run infra:status      # estado dos containers
 bun run sqs:check         # conectividade e profundidade das filas
-bun run sqs:init          # recria/atualiza filas e redrive de forma idempotente
+bun run sqs:init          # cria as filas que faltam e reaplica atributos e redrive (idempotente)
 ```
 
 As portas ficam presas a `127.0.0.1`: PostgreSQL em `55432` e LocalStack em `54566`. Se alguma estiver ocupada, altere `DATABASE_PORT` ou `LOCALSTACK_PORT` no `.env`. Ao trocar `LOCALSTACK_PORT`, ajuste também `SQS_ENDPOINT`. Os dados do PostgreSQL ficam no volume `jungle_gaming_pg_data` e sobrevivem a reinícios.
@@ -124,6 +124,7 @@ docker exec jungle_gaming_localstack awslocal sqs send-message \
 ```bash
 bun run typecheck
 bun run lint
+bunx prettier --check "src/**/*.ts" "test/**/*.ts"
 bun test test/unit        # unidade, sem dependências externas
 bun run test:db           # todas as suítes com PostgreSQL e LocalStack reais, em sequência
 ```

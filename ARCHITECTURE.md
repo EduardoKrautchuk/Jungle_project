@@ -161,7 +161,7 @@ Nenhuma garantia de idempotência depende de memória do processo ou da deduplic
 | Transação `PROCESSED` (inclusive replay) | 200 | `{ transactionId, status, balance, idempotentReplay }` |
 | Wallet criada | 201 | wallet |
 | Aceita com processamento pendente (`PENDING_REFERENCE`) | 202 | transação |
-| Payload ou query inválidos | 400 | `VALIDATION_FAILED` com `details`, ou `MALFORMED_REQUEST` |
+| Payload ou query inválidos, ou `Idempotency-Key` ausente | 400 | `VALIDATION_FAILED` com `details`, ou `MALFORMED_REQUEST` |
 | Wallet ou transação inexistente na consulta | 404 | `WALLET_NOT_FOUND`, `TRANSACTION_NOT_FOUND` |
 | Conflito de idempotência | 409 | `IDEMPOTENCY_CONFLICT` |
 | Wallet duplicada para player e moeda | 409 | `WALLET_ALREADY_EXISTS` |
@@ -170,7 +170,7 @@ Nenhuma garantia de idempotência depende de memória do processo ou da deduplic
 | PostgreSQL indisponível | 503 + `Retry-After: 5` | `SERVICE_UNAVAILABLE` |
 | Erro inesperado | 500 | `INTERNAL_ERROR` |
 
-Os 503 são seguros para reenviar com a mesma chave. Os 4xx não mudam com reenvio. Uma submissão para wallet inexistente é uma rejeição de negócio persistida (422 `WALLET_NOT_FOUND`), não um 404. O mesmo mapeamento vale para todos os endpoints.
+Os 503 são seguros para reenviar com a mesma chave. Na submissão, os 4xx não mudam com reenvio. Uma submissão para wallet inexistente é uma rejeição de negócio persistida (422 `WALLET_NOT_FOUND`), não um 404. O mesmo mapeamento vale para todos os endpoints.
 
 ## Mensageria SQS
 
@@ -223,7 +223,7 @@ O evento é gravado em `outbox_messages` na mesma transação da operação fina
 3. envia com `SendMessage` (`MessageGroupId = group_key`, `MessageDeduplicationId = eventId`): grupos em paralelo, eventos de um grupo em sequência;
 4. confirma, reagenda ou faz dead-letter só com `WHERE lease_token = ?` (fencing), então um publisher que perdeu o lease não consegue confirmar.
 
-O lease foi escolhido em vez de manter a transação aberta durante o envio para que uma rede lenta não segure locks nem conexões; o custo é a coluna de lease e o fencing.
+O lease foi escolhido em vez de manter a transação aberta durante o envio para que uma rede lenta não segure locks nem conexões; o custo é a coluna de lease e o fencing. O lease padrão é de 60 s (`OUTBOX_LEASE_MS`), e a configuração exige que seja maior que duas vezes o timeout de envio (`SQS_REQUEST_TIMEOUT_MS`), para que um envio em andamento não perca o lease. Esse valor também limita quanto tempo os eventos de um publisher morto esperam até outro assumir.
 
 **Ordem**: dentro de uma wallet, os eventos são publicados na ordem de `publish_sequence` (identity gerada no INSERT, que segue a ordem de commit porque o lock da wallet serializa as transações). Só a cabeça de cada grupo é elegível. Wallets diferentes seguem em paralelo.
 
@@ -234,7 +234,7 @@ O lease foi escolhido em vez de manter a transação aberta durante o envio para
 | Falha transitória de rede, timeout, throttling ou 5xx | `attempts+1`, backoff de 1 s, 2 s, 4 s… até 300 s com até 20% de jitter; bloqueia só a sua wallet |
 | Erro de configuração (fila inexistente, credencial) | retry com o mesmo backoff, sem descartar o evento |
 | Evento rejeitado pelo SQS ou envelope inválido | `dead_lettered_at` e `last_error` na tabela; a wallet segue para o evento seguinte |
-| Processo morto antes do envio | o lease expira e outro publisher envia |
+| Processo morto antes do envio | o lease expira (até 60 s por padrão) e outro publisher envia |
 | Processo morto ou PostgreSQL indisponível depois do envio | reenvio com o mesmo `eventId`; a deduplicação FIFO elimina a cópia em 5 minutos, e depois disso o consumidor deduplica pelo `eventId` |
 
 A entrega é **at-least-once**: nenhum evento confirmado é perdido, e duplicatas sempre carregam o mesmo `eventId`.
