@@ -18,6 +18,7 @@ export enum WagerTransactionStatus {
 export enum FailureCode {
   InsufficientFunds = 'INSUFFICIENT_FUNDS',
   ReversalWouldOverdraw = 'REVERSAL_WOULD_OVERDRAW',
+  BalanceLimitExceeded = 'BALANCE_LIMIT_EXCEEDED',
   ReferenceNotFound = 'REFERENCE_NOT_FOUND',
   ReferenceMismatch = 'REFERENCE_MISMATCH',
   InvalidReferenceKind = 'INVALID_REFERENCE_KIND',

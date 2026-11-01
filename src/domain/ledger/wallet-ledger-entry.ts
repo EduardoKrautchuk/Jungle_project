@@ -6,7 +6,6 @@ import {
   UnbalancedLedgerEntryError,
 } from './ledger.errors.js';
 
-/** Persisted shape of a ledger entry. */
 export interface LedgerEntryState {
   id: string;
   walletId: string;
@@ -71,7 +70,6 @@ export class WalletLedgerEntry {
     }
   }
 
-  /** Rebuilds persisted state. Does not re-run financial rules. */
   static rehydrate(state: LedgerEntryState): WalletLedgerEntry {
     WalletLedgerEntry.assertStructure(state);
     return WalletLedgerEntry.build(state);

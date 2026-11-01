@@ -1,8 +1,15 @@
 import { Money } from '../money/money.js';
-import { CurrencyMismatchError } from '../money/money.errors.js';
+import {
+  CurrencyMismatchError,
+  MoneyOutOfRangeError,
+} from '../money/money.errors.js';
 import { LedgerDirection } from '../ledger/ledger-direction.js';
 import { WalletLedgerEntry } from '../ledger/wallet-ledger-entry.js';
-import { InsufficientFundsError, InvalidWalletError } from './wallet.errors.js';
+import {
+  BalanceLimitExceededError,
+  InsufficientFundsError,
+  InvalidWalletError,
+} from './wallet.errors.js';
 
 export interface WalletState {
   id: string;
@@ -172,7 +179,7 @@ export class Wallet {
     }
     const balanceAfter =
       direction === LedgerDirection.Credit
-        ? this.#balance.add(money)
+        ? this.#creditedBalance(money)
         : this.#balance.subtract(money);
 
     return WalletLedgerEntry.create({
@@ -185,6 +192,17 @@ export class Wallet {
       balanceAfter,
       createdAt: movement.at,
     });
+  }
+
+  #creditedBalance(money: Money): Money {
+    try {
+      return this.#balance.add(money);
+    } catch (error) {
+      if (error instanceof MoneyOutOfRangeError) {
+        throw new BalanceLimitExceededError();
+      }
+      throw error;
+    }
   }
 
   #apply(entry: WalletLedgerEntry): void {

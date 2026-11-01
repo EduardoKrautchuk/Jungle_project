@@ -506,6 +506,7 @@ describe('WagerTransaction', () => {
     it('uses stable machine-readable codes', () => {
       expect((Object.values(FailureCode) as string[]).sort()).toEqual([
         'ALREADY_REVERSED',
+        'BALANCE_LIMIT_EXCEEDED',
         'CURRENCY_MISMATCH',
         'INSUFFICIENT_FUNDS',
         'INVALID_REFERENCE_KIND',

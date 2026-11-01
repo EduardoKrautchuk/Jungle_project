@@ -1,0 +1,430 @@
+import {
+  afterAll,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+} from 'bun:test';
+import type { MikroORM } from '@mikro-orm/postgresql';
+import { MIGRATIONS } from '../../../src/infrastructure/persistence/migrations/index.js';
+import { Db, migrateFresh, openTestOrm } from './support.js';
+
+const APP_TABLES = [
+  'inbox_messages',
+  'outbox_messages',
+  'wager_transactions',
+  'wallet_ledger_entries',
+  'wallets',
+];
+const FINANCIAL_TABLES = [
+  'wager_transactions',
+  'wallet_ledger_entries',
+  'wallets',
+];
+const DOMAINS = ['currency_code', 'identifier', 'money_amount', 'sha256_hex'];
+
+const CONSTRAINTS_BEFORE_OUTBOX_LEASE = [
+  'wallets_pk',
+  'wallets_player_currency_uq',
+  'wallets_id_currency_uq',
+  'wallets_id_player_currency_uq',
+  'wallets_balance_non_negative_ck',
+  'wallets_version_ck',
+  'wallets_updated_after_created_ck',
+  'wager_tx_pk',
+  'wager_tx_provider_external_uq',
+  'wager_tx_provider_idempotency_uq',
+  'wager_tx_wallet_currency_uq',
+  'wager_tx_reference_scope_uq',
+  'wager_tx_reference_scope_fk',
+  'wager_tx_wallet_fk',
+  'wager_tx_kind_ck',
+  'wager_tx_status_ck',
+  'wager_tx_failure_code_ck',
+  'wager_tx_amount_ck',
+  'wager_tx_reference_required_ck',
+  'wager_tx_reference_forbidden_ck',
+  'wager_tx_not_self_reference_ck',
+  'wager_tx_resolved_reference_ck',
+  'wager_tx_processed_at_ck',
+  'wager_tx_failure_code_status_ck',
+  'wager_tx_processed_reference_ck',
+  'wager_tx_pending_reference_ck',
+  'wager_tx_result_balance_ck',
+  'wager_tx_processed_result_ck',
+  'wager_tx_reference_attempts_ck',
+  'wager_tx_processed_after_created_ck',
+  'ledger_pk',
+  'ledger_wallet_transaction_uq',
+  'ledger_wallet_fk',
+  'ledger_transaction_fk',
+  'ledger_direction_ck',
+  'ledger_amount_positive_ck',
+  'ledger_balance_before_non_negative_ck',
+  'ledger_balance_after_non_negative_ck',
+  'ledger_arithmetic_ck',
+  'inbox_messages_pk',
+  'inbox_processed_after_received_ck',
+  'outbox_messages_pk',
+  'outbox_payload_object_ck',
+  'outbox_attempts_ck',
+  'outbox_published_after_occurred_ck',
+].sort();
+
+const OUTBOX_LEASE_CONSTRAINTS = [
+  'outbox_publish_sequence_uq',
+  'outbox_lease_complete_ck',
+  'outbox_terminal_state_ck',
+  'outbox_terminal_unleased_ck',
+  'outbox_last_error_length_ck',
+];
+
+const CONSTRAINTS = [
+  ...CONSTRAINTS_BEFORE_OUTBOX_LEASE,
+  ...OUTBOX_LEASE_CONSTRAINTS,
+].sort();
+
+const INDEXES = [
+  'ledger_transaction_idx',
+  'ledger_wallet_created_idx',
+  'outbox_pending_due_idx',
+  'outbox_unpublished_group_idx',
+  'wager_tx_pending_reference_due_idx',
+  'wager_tx_single_reversal_uq',
+  'wager_tx_wallet_link_idx',
+];
+
+let orm: MikroORM;
+let db: Db;
+
+const names = async (sql: string): Promise<string[]> =>
+  (await db.query(sql)).map((row) => String(row.name)).sort();
+
+const tables = () =>
+  names(
+    `SELECT table_name AS name FROM information_schema.tables
+     WHERE table_schema = 'public' AND table_name <> 'mikro_orm_migrations'`,
+  );
+const domains = () =>
+  names(
+    `SELECT t.typname AS name FROM pg_type t
+     JOIN pg_namespace n ON n.oid = t.typnamespace
+     WHERE n.nspname = 'public' AND t.typtype = 'd'`,
+  );
+const tableConstraints = () =>
+  names(
+    `SELECT c.conname AS name FROM pg_constraint c
+     JOIN pg_class r ON r.oid = c.conrelid
+     JOIN pg_namespace n ON n.oid = r.relnamespace
+     WHERE n.nspname = 'public' AND r.relname <> 'mikro_orm_migrations'`,
+  );
+const ledgerTriggers = () =>
+  names(
+    `SELECT tgname AS name FROM pg_trigger
+     WHERE tgrelid = 'wallet_ledger_entries'::regclass AND NOT tgisinternal`,
+  );
+const appendOnlyFunctions = () =>
+  names(
+    `SELECT proname AS name FROM pg_proc
+     WHERE proname = 'wallet_ledger_entries_append_only'`,
+  );
+const executed = async () =>
+  (await orm.migrator.getExecuted()).map((migration) => migration.name);
+
+const indexDefinition = async (name: string): Promise<string> => {
+  const [row] = await db.query(
+    'SELECT indexdef AS definition FROM pg_indexes WHERE indexname = ?',
+    [name],
+  );
+  return String(row?.definition);
+};
+
+async function expectViolationOf(sql: string, constraint: string) {
+  let failure: unknown;
+  try {
+    await db.query(sql);
+  } catch (error) {
+    failure = error;
+  }
+  expect(String(failure)).toContain(constraint);
+}
+
+const constraintDefinition = async (name: string): Promise<string> => {
+  const [row] = await db.query(
+    'SELECT pg_get_constraintdef(oid) AS definition FROM pg_constraint WHERE conname = ?',
+    [name],
+  );
+  return String(row?.definition);
+};
+
+const OUTBOX_LEASE_COLUMNS = [
+  'dead_lettered_at',
+  'group_key',
+  'last_attempt_at',
+  'last_error',
+  'lease_expires_at',
+  'lease_owner',
+  'lease_token',
+  'publish_sequence',
+  'transport_message_id',
+];
+
+const outboxLeaseColumns = () =>
+  names(
+    `SELECT column_name AS name FROM information_schema.columns
+     WHERE table_name = 'outbox_messages'
+       AND column_name IN (${OUTBOX_LEASE_COLUMNS.map((c) => `'${c}'`).join(', ')})`,
+  );
+
+const walletLinkColumns = () =>
+  names(
+    `SELECT column_name AS name FROM information_schema.columns
+     WHERE table_name = 'wager_transactions' AND column_name = 'wallet_link_id'`,
+  );
+
+describe('migrations', () => {
+  beforeAll(async () => {
+    orm = await openTestOrm();
+    db = new Db(orm);
+  });
+
+  beforeEach(async () => {
+    await migrateFresh(orm);
+  });
+
+  afterAll(async () => {
+    await migrateFresh(orm);
+    await orm.close(true);
+  });
+
+  it('applies every migration on an empty database', async () => {
+    expect(await executed()).toEqual(MIGRATIONS.map((m) => m.name));
+    expect(await orm.migrator.getPending()).toEqual([]);
+    expect(await tables()).toEqual(APP_TABLES);
+    expect(await domains()).toEqual(DOMAINS);
+  });
+
+  it('creates all named constraints, indexes and the append-only triggers', async () => {
+    expect(await tableConstraints()).toEqual(CONSTRAINTS);
+    expect(
+      (
+        await db.query(
+          `SELECT indexname AS name FROM pg_indexes
+           WHERE schemaname = 'public' AND indexname IN (${INDEXES.map(() => '?').join(', ')})`,
+          INDEXES,
+        )
+      )
+        .map((row) => String(row.name))
+        .sort(),
+    ).toEqual(INDEXES);
+    expect(await ledgerTriggers()).toEqual([
+      'wallet_ledger_entries_no_truncate',
+      'wallet_ledger_entries_no_update_delete',
+    ]);
+    expect(await appendOnlyFunctions()).toEqual([
+      'wallet_ledger_entries_append_only',
+    ]);
+  });
+
+  it('stores money columns through the exact money_amount domain', async () => {
+    const rows = await db.query(
+      `SELECT table_name || '.' || column_name AS name FROM information_schema.columns
+       WHERE table_schema = 'public' AND domain_name = 'money_amount'`,
+    );
+    expect(rows.map((row) => String(row.name)).sort()).toEqual([
+      'wager_transactions.amount',
+      'wager_transactions.result_balance',
+      'wallet_ledger_entries.amount',
+      'wallet_ledger_entries.balance_after',
+      'wallet_ledger_entries.balance_before',
+      'wallets.balance',
+    ]);
+  });
+
+  it('allows a single reversal per referenced transaction', async () => {
+    expect(await indexDefinition('wager_tx_single_reversal_uq')).toContain(
+      '(reference_transaction_id) WHERE',
+    );
+  });
+
+  it('accepts BALANCE_LIMIT_EXCEEDED as a rejection failure code', async () => {
+    expect(await constraintDefinition('wager_tx_failure_code_ck')).toContain(
+      'BALANCE_LIMIT_EXCEEDED',
+    );
+    const wallet = await db.insertWallet();
+    await db.insertTransaction(wallet, {
+      status: 'REJECTED',
+      failure_code: 'BALANCE_LIMIT_EXCEEDED',
+    });
+    expect(
+      await db.query(
+        "SELECT 1 FROM wager_transactions WHERE failure_code = 'BALANCE_LIMIT_EXCEEDED'",
+      ),
+    ).toHaveLength(1);
+  });
+
+  it('reverts the failure code migration without losing rows that use the new code', async () => {
+    const wallet = await db.insertWallet();
+    await db.insertTransaction(wallet, {
+      status: 'REJECTED',
+      failure_code: 'BALANCE_LIMIT_EXCEEDED',
+    });
+
+    await orm.migrator.down({ to: MIGRATIONS[MIGRATIONS.length - 3]?.name });
+
+    expect(await executed()).toEqual(
+      MIGRATIONS.slice(0, -2).map((m) => m.name),
+    );
+    const definition = await constraintDefinition('wager_tx_failure_code_ck');
+    expect(definition).not.toContain('BALANCE_LIMIT_EXCEEDED');
+    expect(definition).toContain('NOT VALID');
+    expect(
+      await db.query(
+        "SELECT 1 FROM wager_transactions WHERE failure_code = 'BALANCE_LIMIT_EXCEEDED'",
+      ),
+    ).toHaveLength(1);
+    let failure: unknown;
+    try {
+      await db.insertTransaction(wallet, {
+        status: 'REJECTED',
+        failure_code: 'BALANCE_LIMIT_EXCEEDED',
+      });
+    } catch (error) {
+      failure = error;
+    }
+    expect(failure).toBeInstanceOf(Error);
+
+    await orm.migrator.up();
+    expect(
+      await constraintDefinition('wager_tx_failure_code_ck'),
+    ).not.toContain('NOT VALID');
+  });
+
+  it('adds outbox leases over existing rows and reverts them with rows present', async () => {
+    await orm.migrator.down();
+    const payload = (walletId: string) =>
+      JSON.stringify({ eventId: 'x', data: { walletId } });
+    for (const [id, aggregate, walletId] of [
+      ['00000000-0000-7000-8000-00000000000a', 'agg-1', 'wallet-a'],
+      ['00000000-0000-7000-8000-00000000000b', 'agg-2', 'wallet-a'],
+    ] as const) {
+      await db.query(
+        `INSERT INTO outbox_messages (id, aggregate_id, event_type, payload, occurred_at, next_attempt_at)
+         VALUES (?, ?, 'WalletBalanceChanged', ?::jsonb, now(), now())`,
+        [id, aggregate, payload(walletId)],
+      );
+    }
+    await db.query(
+      `INSERT INTO outbox_messages (id, aggregate_id, event_type, payload, occurred_at, next_attempt_at)
+       VALUES ('00000000-0000-7000-8000-00000000000c', 'agg-3', 'Other', '{"data":{}}'::jsonb, now(), now())`,
+    );
+
+    await orm.migrator.up();
+
+    expect(await outboxLeaseColumns()).toEqual(OUTBOX_LEASE_COLUMNS);
+    const rows = await db.query(
+      'SELECT group_key, publish_sequence::text AS sequence FROM outbox_messages ORDER BY id',
+    );
+    expect(rows.map((row) => row.group_key)).toEqual([
+      'wallet-a',
+      'wallet-a',
+      'agg-3',
+    ]);
+    expect(new Set(rows.map((row) => row.sequence)).size).toBe(3);
+    await db.query(
+      `UPDATE outbox_messages
+          SET lease_owner = 'p1', lease_token = '00000000-0000-7000-8000-0000000000ff',
+              lease_expires_at = now() + interval '1 minute'
+        WHERE id = '00000000-0000-7000-8000-00000000000a'`,
+    );
+    await expectViolationOf(
+      `UPDATE outbox_messages SET lease_owner = NULL
+        WHERE id = '00000000-0000-7000-8000-00000000000a'`,
+      'outbox_lease_complete_ck',
+    );
+    await expectViolationOf(
+      `UPDATE outbox_messages SET published_at = now()
+        WHERE id = '00000000-0000-7000-8000-00000000000a'`,
+      'outbox_terminal_unleased_ck',
+    );
+
+    await orm.migrator.down();
+    expect(await outboxLeaseColumns()).toEqual([]);
+    expect(await db.query('SELECT 1 FROM outbox_messages')).toHaveLength(3);
+    await orm.migrator.up();
+  });
+
+  it('reverts one step at a time in reverse order', async () => {
+    const expectExecuted = async (count: number) =>
+      expect(await executed()).toEqual(
+        MIGRATIONS.slice(0, count).map((m) => m.name),
+      );
+
+    await orm.migrator.down();
+    await expectExecuted(4);
+    expect(await outboxLeaseColumns()).toEqual([]);
+    expect(await tableConstraints()).toEqual(CONSTRAINTS_BEFORE_OUTBOX_LEASE);
+
+    await orm.migrator.down();
+    await expectExecuted(3);
+    expect(
+      await constraintDefinition('wager_tx_failure_code_ck'),
+    ).not.toContain('BALANCE_LIMIT_EXCEEDED');
+    expect(await tableConstraints()).toEqual(CONSTRAINTS_BEFORE_OUTBOX_LEASE);
+
+    await orm.migrator.down();
+    await expectExecuted(2);
+    expect(await walletLinkColumns()).toEqual([]);
+    expect(await indexDefinition('wager_tx_single_reversal_uq')).toContain(
+      '(reference_transaction_id, kind) WHERE',
+    );
+    expect(await tableConstraints()).not.toContain('wager_tx_wallet_fk');
+
+    await orm.migrator.down();
+    await expectExecuted(1);
+    expect(await tables()).toEqual(FINANCIAL_TABLES);
+
+    await orm.migrator.down();
+    await expectExecuted(0);
+    expect(await tables()).toEqual([]);
+    expect(await domains()).toEqual([]);
+    expect(await appendOnlyFunctions()).toEqual([]);
+  });
+
+  it('reapplies cleanly after a full rollback and keeps working', async () => {
+    await orm.migrator.down({ to: 0 });
+    await orm.migrator.up();
+    expect(await executed()).toEqual(MIGRATIONS.map((m) => m.name));
+    expect(await tables()).toEqual(APP_TABLES);
+    expect(await tableConstraints()).toEqual(CONSTRAINTS);
+    expect(await walletLinkColumns()).toEqual(['wallet_link_id']);
+
+    const wallet = await db.insertWallet();
+    const transaction = await db.insertTransaction(wallet);
+    await db.insertLedger(wallet, transaction);
+    expect(await db.query('SELECT 1 FROM wallet_ledger_entries')).toHaveLength(
+      1,
+    );
+  });
+
+  it('reverts the latest migration with data present and reapplies it', async () => {
+    const wallet = await db.insertWallet();
+    await db.insertTransaction(wallet);
+    await orm.migrator.down();
+    await orm.migrator.up();
+    expect(await db.query('SELECT 1 FROM wager_transactions')).toHaveLength(1);
+  });
+
+  it('rolls back a full cycle even with ledger rows present', async () => {
+    const wallet = await db.insertWallet();
+    const transaction = await db.insertTransaction(wallet);
+    await db.insertLedger(wallet, transaction);
+    await orm.migrator.down({ to: 0 });
+    expect(await tables()).toEqual([]);
+    await orm.migrator.up();
+    expect(await db.query('SELECT 1 FROM wallet_ledger_entries')).toHaveLength(
+      0,
+    );
+  });
+});

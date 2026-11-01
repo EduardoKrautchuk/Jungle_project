@@ -1,0 +1,60 @@
+name: jungle_gaming
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    container_name: jungle_gaming_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${DATABASE_USER:?DATABASE_USER is required}
+      POSTGRES_PASSWORD: ${DATABASE_PASSWORD:?DATABASE_PASSWORD is required}
+      POSTGRES_DB: ${DATABASE_NAME:?DATABASE_NAME is required}
+      POSTGRES_TEST_DB: ${DATABASE_TEST_NAME:?DATABASE_TEST_NAME is required}
+    ports:
+      - '127.0.0.1:${DATABASE_PORT:-55432}:5432'
+    volumes:
+      - jungle_gaming_pg_data:/var/lib/postgresql/data
+      - ./docker/postgres/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test:
+        ['CMD-SHELL', 'pg_isready -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}"']
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 10s
+
+  localstack:
+    image: localstack/localstack:4.4
+    container_name: jungle_gaming_localstack
+    restart: unless-stopped
+    environment:
+      SERVICES: sqs
+      AWS_DEFAULT_REGION: ${AWS_REGION:-us-east-1}
+      SQS_ENDPOINT_STRATEGY: path
+      SQS_WAGER_QUEUE_NAME: ${SQS_WAGER_QUEUE_NAME:-wager-transactions.fifo}
+      SQS_WAGER_DLQ_NAME: ${SQS_WAGER_DLQ_NAME:-wager-transactions-dlq.fifo}
+      SQS_EVENTS_QUEUE_NAME: ${SQS_EVENTS_QUEUE_NAME:-wager-events.fifo}
+      SQS_EVENTS_DLQ_NAME: ${SQS_EVENTS_DLQ_NAME:-wager-events-dlq.fifo}
+      SQS_MAX_RECEIVE_COUNT: ${SQS_MAX_RECEIVE_COUNT:-5}
+      SQS_VISIBILITY_TIMEOUT_SECONDS: ${SQS_VISIBILITY_TIMEOUT_SECONDS:-30}
+    ports:
+      - '127.0.0.1:${LOCALSTACK_PORT:-54566}:4566'
+    volumes:
+      - jungle_gaming_localstack_data:/var/lib/localstack
+      - ./docker/localstack/init/ready.d:/etc/localstack/init/ready.d:ro
+    healthcheck:
+      test:
+        [
+          'CMD-SHELL',
+          'awslocal sqs get-queue-url --queue-name "$${SQS_WAGER_QUEUE_NAME}" >/dev/null && awslocal sqs get-queue-url --queue-name "$${SQS_WAGER_DLQ_NAME}" >/dev/null && awslocal sqs get-queue-url --queue-name "$${SQS_EVENTS_QUEUE_NAME}" >/dev/null && awslocal sqs get-queue-url --queue-name "$${SQS_EVENTS_DLQ_NAME}" >/dev/null',
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 24
+      start_period: 15s
+
+volumes:
+  jungle_gaming_pg_data:
+    name: jungle_gaming_pg_data
+  jungle_gaming_localstack_data:
+    name: jungle_gaming_localstack_data
