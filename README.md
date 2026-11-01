@@ -28,16 +28,18 @@ bun run sqs:check         # conectividade e profundidade das filas
 bun run sqs:init          # recria/atualiza filas e redrive de forma idempotente
 ```
 
-O LocalStack cria automaticamente, ao subir, `wager-transactions.fifo` e `wager-transactions-dlq.fifo` com `maxReceiveCount=5` (script em `docker/localstack/init/ready.d`).
+O LocalStack cria automaticamente, ao subir, `wager-transactions.fifo`, `wager-events.fifo` e as DLQs correspondentes com `maxReceiveCount=5` (script em `docker/localstack/init/ready.d`).
 
 ## Execução
 
 ```bash
 bun run start             # API HTTP
 bun run worker            # consumidor SQS (pode rodar em várias instâncias)
+bun run outbox:publisher  # publica a Outbox em wager-events.fifo (várias instâncias)
+bun run outbox:backlog    # estado da Outbox (pendentes, retry, publicados, dead-letter)
 ```
 
-O worker encerra de forma controlada com `SIGTERM` ou `SIGINT`.
+Worker e publisher encerram de forma controlada com `SIGTERM` ou `SIGINT`.
 
 ## Testes
 
@@ -45,7 +47,7 @@ O worker encerra de forma controlada com `SIGTERM` ou `SIGINT`.
 bun run typecheck
 bun run lint
 bun test test/unit
-bun run test:db           # integração, E2E, mensageria e concorrência, em sequência
+bun run test:db           # integração, E2E, mensageria, outbox e concorrência, em sequência
 ```
 
-As suítes `test:integration`, `test:e2e`, `test:messaging` e `test:concurrency` recriam o mesmo banco de testes e **devem rodar em sequência**. `test:messaging` e `test:concurrency` exigem o LocalStack ativo; cada teste cria filas próprias e as remove ao final.
+As suítes `test:integration`, `test:e2e`, `test:messaging`, `test:outbox` e `test:concurrency` recriam o mesmo banco de testes e **devem rodar em sequência**. `test:messaging`, `test:outbox` e `test:concurrency` exigem o LocalStack ativo; cada teste cria filas próprias e as remove ao final.

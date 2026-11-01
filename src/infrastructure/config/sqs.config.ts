@@ -13,6 +13,9 @@ export interface SqsConfig {
   readonly deadLetterQueueName: string;
   readonly queueUrl: string | undefined;
   readonly deadLetterQueueUrl: string | undefined;
+  readonly eventsQueueName: string;
+  readonly eventsDeadLetterQueueName: string;
+  readonly eventsQueueUrl: string | undefined;
   readonly requestTimeoutMs: number;
   readonly waitTimeSeconds: number;
   readonly maxMessages: number;
@@ -82,9 +85,25 @@ export function loadSqsConfig(env: Env): SqsConfig {
     'SQS_WAGER_DLQ_NAME',
     'wager-transactions-dlq.fifo',
   );
+  const eventsQueueName = text('SQS_EVENTS_QUEUE_NAME', 'wager-events.fifo');
+  const eventsDeadLetterQueueName = text(
+    'SQS_EVENTS_DLQ_NAME',
+    'wager-events-dlq.fifo',
+  );
+  const names = [
+    queueName,
+    deadLetterQueueName,
+    eventsQueueName,
+    eventsDeadLetterQueueName,
+  ];
+  if (new Set(names).size !== names.length) {
+    problems.push('command and event queue names must all be distinct');
+  }
   for (const [key, name] of [
     ['SQS_WAGER_QUEUE_NAME', queueName],
     ['SQS_WAGER_DLQ_NAME', deadLetterQueueName],
+    ['SQS_EVENTS_QUEUE_NAME', eventsQueueName],
+    ['SQS_EVENTS_DLQ_NAME', eventsDeadLetterQueueName],
   ] as const) {
     if (!FIFO_QUEUE_NAME.test(name)) {
       problems.push(`${key} must be a FIFO queue name ending in ".fifo"`);
@@ -126,6 +145,9 @@ export function loadSqsConfig(env: Env): SqsConfig {
     deadLetterQueueName,
     queueUrl: optional('SQS_WAGER_QUEUE_URL'),
     deadLetterQueueUrl: optional('SQS_WAGER_DLQ_URL'),
+    eventsQueueName,
+    eventsDeadLetterQueueName,
+    eventsQueueUrl: optional('SQS_EVENTS_QUEUE_URL'),
     requestTimeoutMs,
     waitTimeSeconds,
     maxMessages: integer('SQS_MAX_MESSAGES', 10, 1, 10),

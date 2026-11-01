@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 import { InvalidConfigurationError } from '../../../../src/infrastructure/config/database.config.js';
+import { loadOutboxPublisherConfig } from '../../../../src/infrastructure/config/outbox.config.js';
 import { loadSqsConfig } from '../../../../src/infrastructure/config/sqs.config.js';
 
 describe('loadSqsConfig', () => {
@@ -35,5 +36,31 @@ describe('loadSqsConfig', () => {
     [{ SQS_RETRY_BASE_SECONDS: '10', SQS_RETRY_MAX_SECONDS: '5' }],
   ])('rejects %p', (env) => {
     expect(() => loadSqsConfig(env)).toThrow(InvalidConfigurationError);
+  });
+});
+
+describe('event queue and publisher configuration', () => {
+  it('defaults the outgoing event queues to distinct FIFO names', () => {
+    expect(loadSqsConfig({})).toMatchObject({
+      eventsQueueName: 'wager-events.fifo',
+      eventsDeadLetterQueueName: 'wager-events-dlq.fifo',
+    });
+    expect(() =>
+      loadSqsConfig({ SQS_EVENTS_QUEUE_NAME: 'wager-transactions.fifo' }),
+    ).toThrow(InvalidConfigurationError);
+  });
+
+  it('requires a lease longer than two send timeouts', () => {
+    expect(loadOutboxPublisherConfig({}, 5_000)).toMatchObject({
+      leaseMs: 30_000,
+      maxGroups: 10,
+      maxPerGroup: 10,
+    });
+    expect(() =>
+      loadOutboxPublisherConfig({ OUTBOX_LEASE_MS: '9000' }, 5_000),
+    ).toThrow(InvalidConfigurationError);
+    expect(() =>
+      loadOutboxPublisherConfig({ OUTBOX_PUBLISHER_ID: 'has space' }, 5_000),
+    ).toThrow(InvalidConfigurationError);
   });
 });

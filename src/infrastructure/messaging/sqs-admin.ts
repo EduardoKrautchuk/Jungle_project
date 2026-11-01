@@ -1,7 +1,14 @@
 import { GetQueueAttributesCommand } from '@aws-sdk/client-sqs';
 import { loadSqsConfig } from '../config/sqs.config.js';
-import { createSqsClient, resolveWagerQueueUrls } from './sqs-client.js';
-import { ensureWagerQueues } from './sqs-queue-provisioner.js';
+import {
+  createSqsClient,
+  resolveEventsQueueUrl,
+  resolveWagerQueueUrls,
+} from './sqs-client.js';
+import {
+  ensureEventQueues,
+  ensureWagerQueues,
+} from './sqs-queue-provisioner.js';
 
 const COMMANDS = ['init', 'check'] as const;
 type Command = (typeof COMMANDS)[number];
@@ -26,9 +33,30 @@ try {
     command === 'init'
       ? await ensureWagerQueues(client, config)
       : await resolveWagerQueueUrls(client, config);
+  const eventsUrls =
+    command === 'init'
+      ? await ensureEventQueues(client, {
+          ...config,
+          queueName: config.eventsQueueName,
+          deadLetterQueueName: config.eventsDeadLetterQueueName,
+        })
+      : {
+          queueUrl: await resolveEventsQueueUrl(client, config),
+          deadLetterQueueUrl: (
+            await resolveWagerQueueUrls(client, {
+              ...config,
+              queueUrl: undefined,
+              deadLetterQueueUrl: undefined,
+              queueName: config.eventsQueueName,
+              deadLetterQueueName: config.eventsDeadLetterQueueName,
+            })
+          ).deadLetterQueueUrl,
+        };
   for (const [label, url] of [
     ['queue', urls.queueUrl],
     ['dead-letter queue', urls.deadLetterQueueUrl],
+    ['events queue', eventsUrls.queueUrl],
+    ['events dead-letter queue', eventsUrls.deadLetterQueueUrl],
   ] as const) {
     const { Attributes } = await client.send(
       new GetQueueAttributesCommand({

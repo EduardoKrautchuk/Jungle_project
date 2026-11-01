@@ -19,7 +19,21 @@ export interface WagerQueueDefinition {
 const FOUR_DAYS_SECONDS = '345600';
 const FOURTEEN_DAYS_SECONDS = '1209600';
 
-export async function ensureWagerQueues(
+export function ensureWagerQueues(
+  client: SQSClient,
+  definition: WagerQueueDefinition,
+): Promise<WagerQueueUrls> {
+  return ensureFifoQueuePair(client, definition);
+}
+
+export function ensureEventQueues(
+  client: SQSClient,
+  definition: WagerQueueDefinition,
+): Promise<WagerQueueUrls> {
+  return ensureFifoQueuePair(client, definition);
+}
+
+async function ensureFifoQueuePair(
   client: SQSClient,
   definition: WagerQueueDefinition,
 ): Promise<WagerQueueUrls> {

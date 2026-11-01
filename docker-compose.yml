@@ -33,6 +33,8 @@ services:
       SQS_ENDPOINT_STRATEGY: path
       SQS_WAGER_QUEUE_NAME: ${SQS_WAGER_QUEUE_NAME:-wager-transactions.fifo}
       SQS_WAGER_DLQ_NAME: ${SQS_WAGER_DLQ_NAME:-wager-transactions-dlq.fifo}
+      SQS_EVENTS_QUEUE_NAME: ${SQS_EVENTS_QUEUE_NAME:-wager-events.fifo}
+      SQS_EVENTS_DLQ_NAME: ${SQS_EVENTS_DLQ_NAME:-wager-events-dlq.fifo}
       SQS_MAX_RECEIVE_COUNT: ${SQS_MAX_RECEIVE_COUNT:-5}
       SQS_VISIBILITY_TIMEOUT_SECONDS: ${SQS_VISIBILITY_TIMEOUT_SECONDS:-30}
     ports:
@@ -44,7 +46,7 @@ services:
       test:
         [
           'CMD-SHELL',
-          'awslocal sqs get-queue-url --queue-name "$${SQS_WAGER_QUEUE_NAME}" >/dev/null && awslocal sqs get-queue-url --queue-name "$${SQS_WAGER_DLQ_NAME}" >/dev/null',
+          'awslocal sqs get-queue-url --queue-name "$${SQS_WAGER_QUEUE_NAME}" >/dev/null && awslocal sqs get-queue-url --queue-name "$${SQS_WAGER_DLQ_NAME}" >/dev/null && awslocal sqs get-queue-url --queue-name "$${SQS_EVENTS_QUEUE_NAME}" >/dev/null && awslocal sqs get-queue-url --queue-name "$${SQS_EVENTS_DLQ_NAME}" >/dev/null',
         ]
       interval: 5s
       timeout: 5s

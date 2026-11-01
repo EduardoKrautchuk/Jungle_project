@@ -105,5 +105,82 @@ Logs JSON por linha, sem payload financeiro, com estes campos: `consumerName`, `
 ### Limitações conhecidas
 
 - **LocalStack**: a versão 4.4 foi fixada porque as imagens mais recentes exigem token. A edição community não persiste filas; elas são recriadas pelo script de init a cada start.
-- **Publisher da outbox**: ainda não existe. Os eventos ficam pendentes na tabela `outbox_messages` (Etapa 8).
 - **`PENDING_REFERENCE`**: a resolução depende do worker da Etapa 9.
+
+## Publisher da Outbox
+
+### Fluxo
+
+1. A operação financeira grava wallet, ledger, transação e evento em `outbox_messages` num único commit.
+2. Um processo separado (`bun run outbox:publisher`) reivindica eventos já confirmados e os envia para `wager-events.fifo`.
+3. Depois do envio, o publisher registra `published_at` e o `transport_message_id` no PostgreSQL.
+
+Não existe commit distribuído entre PostgreSQL e SQS. A entrega é at-least-once, e os consumidores devem deduplicar pelo `eventId`.
+
+### Filas de saída
+
+| Fila | Uso |
+|---|---|
+| `wager-events.fifo` | eventos de integração. Separada de `wager-transactions.fifo`, de modo que nenhum evento é interpretado como comando |
+| `wager-events-dlq.fifo` | DLQ com redrive após 5 recebimentos, para consumidores downstream que não conseguem processar um evento |
+
+Falhas do próprio publisher não vão para essa DLQ: ficam auditadas na tabela.
+
+### Mensagem SQS
+
+- O corpo é exatamente o `payload` persistido, ou seja, o envelope `IntegrationEvent` com `eventId`, `eventType`, `aggregateId`, `correlationId`, `causationId`, `occurredAt`, `version` e `data`.
+- O evento nunca é reconstruído a partir do estado atual da wallet.
+- `MessageGroupId` = `group_key`, uma coluna gerada a partir de `payload.data.walletId`, com fallback para `aggregate_id`.
+- `MessageDeduplicationId` = `eventId`.
+- Atributos: `eventId`, `eventType`, `eventVersion` e `correlationId`.
+- **Validação antes do envio**: confere identificadores contra a linha, valida o timestamp e a versão, exige que todo `amount` seja string decimal, e limita o corpo a 256 KiB e o `group_key` ao formato aceito pelo SQS.
+
+### Migration `Migration20261102120000_add_outbox_publication_lease`
+
+Migration reversível e compatível com linhas existentes. Adiciona:
+
+- `publish_sequence`: identity, gerada no INSERT. Dentro de uma wallet, a ordem dos INSERTs segue a ordem de commit, porque o lock da wallet serializa as transações.
+- `group_key`: coluna gerada.
+- `lease_owner`, `lease_token` e `lease_expires_at`.
+- `last_attempt_at`, `last_error`, `dead_lettered_at` e `transport_message_id`.
+- Constraints de lease completo e estados terminais exclusivos.
+- Índice parcial `(group_key, publish_sequence)` sobre as linhas não publicadas.
+
+### Claim
+
+O claim é um único statement SQL, sem transação aberta durante a chamada de rede:
+
+1. **Seleção das cabeças**: só a mensagem mais antiga não publicada de cada `group_key` pode ser escolhida, e apenas se estiver vencida (`next_attempt_at <= now()`) e sem lease ativo. As cabeças são travadas com `FOR UPDATE SKIP LOCKED` e há um limite de `OUTBOX_MAX_GROUPS` grupos.
+2. **Lease**: até `OUTBOX_MAX_PER_GROUP` mensagens de cada grupo escolhido recebem `lease_owner`, um `lease_token` aleatório e `lease_expires_at = now() + lease`. O relógio de referência é o do PostgreSQL.
+3. **Envio**: os grupos são enviados em paralelo; dentro de um grupo, em sequência e com `SendMessage` individual. Um erro interrompe o grupo e libera o lease do restante.
+4. **Confirmação, retry e dead-letter**: só valem com `WHERE lease_token = ?` (fencing). Um publisher que perdeu o lease não consegue confirmar.
+5. **Orçamento de lease**: antes de cada envio, o publisher confere quanto resta do lease e, se não houver margem para um envio completo, devolve o restante do grupo.
+
+### Recuperação
+
+- **Lease expirado**: a mensagem volta a ser elegível e o novo dono registra `outbox.lease_recovered` com o `previousOwner`.
+- **Processo morto antes do `SendMessage`**: nada foi enviado; outro publisher envia depois que o lease expira.
+- **Processo morto ou PostgreSQL indisponível depois do `SendMessage`**: o evento é reenviado com o mesmo `eventId`. A deduplicação FIFO elimina a cópia dentro de 5 minutos; fora dessa janela, quem garante é a deduplicação do consumidor.
+- **Timeout local**: a SDK do publisher usa `maxAttempts = 1`, e o retry fica sob controle da Outbox.
+
+### Retries
+
+| Situação | Tratamento |
+|---|---|
+| Falha transitória (rede, timeout, throttling, 5xx) | `attempts+1`, `next_attempt_at = now() + backoff`, com backoff de 1s, 2s, 4s… até 300s e jitter que reduz o atraso em até 20%. `last_error` guarda o código |
+| Erro de configuração (fila inexistente, credencial inválida) | Retry com o mesmo backoff, sem descartar o evento |
+| Evento rejeitado pelo SQS ou envelope inválido | `dead_lettered_at` preenchido e `last_error` com o código. O grupo segue para o evento seguinte |
+| PostgreSQL indisponível no claim | Ciclo com backoff exponencial até `OUTBOX_ERROR_BACKOFF_MAX_MS` |
+| Ciclo sem eventos elegíveis | Espera `OUTBOX_IDLE_POLL_MS`, sem busy polling |
+
+### Ordenação
+
+- **Mesma wallet**: a ordem de publicação segue `publish_sequence`. O `SKIP LOCKED` não quebra essa ordem, porque só a cabeça de cada grupo é elegível, e enquanto ela não for publicada ou ir para dead-letter nenhum outro publisher pega os eventos seguintes.
+- **Wallets diferentes**: publicadas em paralelo.
+- **Retry da cabeça**: bloqueia apenas a sua wallet até ser publicada; as outras wallets seguem.
+- **Dead-letter**: um evento em dead-letter deixa de bloquear a wallet, então o consumidor pode ver uma lacuna na sequência dessa wallet.
+
+### Operação
+
+- `bun run outbox:backlog` mostra, para o banco de desenvolvimento, eventos pendentes, vencidos, em retry, com lease ativo ou expirado, publicados e em dead-letter, além da idade do pendente mais antigo. Use `-- --test` para o banco de testes.
+- A API HTTP não inicia o publisher.

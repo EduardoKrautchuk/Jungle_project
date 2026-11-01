@@ -12,6 +12,9 @@ const SERVER_PATH = fileURLToPath(new URL('./http-server.ts', import.meta.url));
 const SQS_WORKER_PATH = fileURLToPath(
   new URL('./sqs-worker.ts', import.meta.url),
 );
+const OUTBOX_PUBLISHER_PATH = fileURLToPath(
+  new URL('./outbox-publisher-process.ts', import.meta.url),
+);
 
 type Child = Bun.Subprocess<'pipe', 'pipe', 'pipe'>;
 
@@ -50,6 +53,13 @@ export class WorkerProcess {
     env: Record<string, string>,
   ): WorkerProcess {
     return WorkerProcess.start(name, SQS_WORKER_PATH, env);
+  }
+
+  static spawnOutboxPublisher(
+    name: string,
+    env: Record<string, string>,
+  ): WorkerProcess {
+    return WorkerProcess.start(name, OUTBOX_PUBLISHER_PATH, env);
   }
 
   output(prefix: string): string[] {

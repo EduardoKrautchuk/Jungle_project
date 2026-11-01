@@ -24,7 +24,7 @@ const FINANCIAL_TABLES = [
 ];
 const DOMAINS = ['currency_code', 'identifier', 'money_amount', 'sha256_hex'];
 
-const CONSTRAINTS = [
+const CONSTRAINTS_BEFORE_OUTBOX_LEASE = [
   'wallets_pk',
   'wallets_player_currency_uq',
   'wallets_id_currency_uq',
@@ -72,10 +72,24 @@ const CONSTRAINTS = [
   'outbox_published_after_occurred_ck',
 ].sort();
 
+const OUTBOX_LEASE_CONSTRAINTS = [
+  'outbox_publish_sequence_uq',
+  'outbox_lease_complete_ck',
+  'outbox_terminal_state_ck',
+  'outbox_terminal_unleased_ck',
+  'outbox_last_error_length_ck',
+];
+
+const CONSTRAINTS = [
+  ...CONSTRAINTS_BEFORE_OUTBOX_LEASE,
+  ...OUTBOX_LEASE_CONSTRAINTS,
+].sort();
+
 const INDEXES = [
   'ledger_transaction_idx',
   'ledger_wallet_created_idx',
   'outbox_pending_due_idx',
+  'outbox_unpublished_group_idx',
   'wager_tx_pending_reference_due_idx',
   'wager_tx_single_reversal_uq',
   'wager_tx_wallet_link_idx',
@@ -126,6 +140,16 @@ const indexDefinition = async (name: string): Promise<string> => {
   return String(row?.definition);
 };
 
+async function expectViolationOf(sql: string, constraint: string) {
+  let failure: unknown;
+  try {
+    await db.query(sql);
+  } catch (error) {
+    failure = error;
+  }
+  expect(String(failure)).toContain(constraint);
+}
+
 const constraintDefinition = async (name: string): Promise<string> => {
   const [row] = await db.query(
     'SELECT pg_get_constraintdef(oid) AS definition FROM pg_constraint WHERE conname = ?',
@@ -133,6 +157,25 @@ const constraintDefinition = async (name: string): Promise<string> => {
   );
   return String(row?.definition);
 };
+
+const OUTBOX_LEASE_COLUMNS = [
+  'dead_lettered_at',
+  'group_key',
+  'last_attempt_at',
+  'last_error',
+  'lease_expires_at',
+  'lease_owner',
+  'lease_token',
+  'publish_sequence',
+  'transport_message_id',
+];
+
+const outboxLeaseColumns = () =>
+  names(
+    `SELECT column_name AS name FROM information_schema.columns
+     WHERE table_name = 'outbox_messages'
+       AND column_name IN (${OUTBOX_LEASE_COLUMNS.map((c) => `'${c}'`).join(', ')})`,
+  );
 
 const walletLinkColumns = () =>
   names(
@@ -228,10 +271,10 @@ describe('migrations', () => {
       failure_code: 'BALANCE_LIMIT_EXCEEDED',
     });
 
-    await orm.migrator.down();
+    await orm.migrator.down({ to: MIGRATIONS[MIGRATIONS.length - 3]?.name });
 
     expect(await executed()).toEqual(
-      MIGRATIONS.slice(0, -1).map((m) => m.name),
+      MIGRATIONS.slice(0, -2).map((m) => m.name),
     );
     const definition = await constraintDefinition('wager_tx_failure_code_ck');
     expect(definition).not.toContain('BALANCE_LIMIT_EXCEEDED');
@@ -258,6 +301,60 @@ describe('migrations', () => {
     ).not.toContain('NOT VALID');
   });
 
+  it('adds outbox leases over existing rows and reverts them with rows present', async () => {
+    await orm.migrator.down();
+    const payload = (walletId: string) =>
+      JSON.stringify({ eventId: 'x', data: { walletId } });
+    for (const [id, aggregate, walletId] of [
+      ['00000000-0000-7000-8000-00000000000a', 'agg-1', 'wallet-a'],
+      ['00000000-0000-7000-8000-00000000000b', 'agg-2', 'wallet-a'],
+    ] as const) {
+      await db.query(
+        `INSERT INTO outbox_messages (id, aggregate_id, event_type, payload, occurred_at, next_attempt_at)
+         VALUES (?, ?, 'WalletBalanceChanged', ?::jsonb, now(), now())`,
+        [id, aggregate, payload(walletId)],
+      );
+    }
+    await db.query(
+      `INSERT INTO outbox_messages (id, aggregate_id, event_type, payload, occurred_at, next_attempt_at)
+       VALUES ('00000000-0000-7000-8000-00000000000c', 'agg-3', 'Other', '{"data":{}}'::jsonb, now(), now())`,
+    );
+
+    await orm.migrator.up();
+
+    expect(await outboxLeaseColumns()).toEqual(OUTBOX_LEASE_COLUMNS);
+    const rows = await db.query(
+      'SELECT group_key, publish_sequence::text AS sequence FROM outbox_messages ORDER BY id',
+    );
+    expect(rows.map((row) => row.group_key)).toEqual([
+      'wallet-a',
+      'wallet-a',
+      'agg-3',
+    ]);
+    expect(new Set(rows.map((row) => row.sequence)).size).toBe(3);
+    await db.query(
+      `UPDATE outbox_messages
+          SET lease_owner = 'p1', lease_token = '00000000-0000-7000-8000-0000000000ff',
+              lease_expires_at = now() + interval '1 minute'
+        WHERE id = '00000000-0000-7000-8000-00000000000a'`,
+    );
+    await expectViolationOf(
+      `UPDATE outbox_messages SET lease_owner = NULL
+        WHERE id = '00000000-0000-7000-8000-00000000000a'`,
+      'outbox_lease_complete_ck',
+    );
+    await expectViolationOf(
+      `UPDATE outbox_messages SET published_at = now()
+        WHERE id = '00000000-0000-7000-8000-00000000000a'`,
+      'outbox_terminal_unleased_ck',
+    );
+
+    await orm.migrator.down();
+    expect(await outboxLeaseColumns()).toEqual([]);
+    expect(await db.query('SELECT 1 FROM outbox_messages')).toHaveLength(3);
+    await orm.migrator.up();
+  });
+
   it('reverts one step at a time in reverse order', async () => {
     const expectExecuted = async (count: number) =>
       expect(await executed()).toEqual(
@@ -265,11 +362,16 @@ describe('migrations', () => {
       );
 
     await orm.migrator.down();
+    await expectExecuted(4);
+    expect(await outboxLeaseColumns()).toEqual([]);
+    expect(await tableConstraints()).toEqual(CONSTRAINTS_BEFORE_OUTBOX_LEASE);
+
+    await orm.migrator.down();
     await expectExecuted(3);
     expect(
       await constraintDefinition('wager_tx_failure_code_ck'),
     ).not.toContain('BALANCE_LIMIT_EXCEEDED');
-    expect(await tableConstraints()).toEqual(CONSTRAINTS);
+    expect(await tableConstraints()).toEqual(CONSTRAINTS_BEFORE_OUTBOX_LEASE);
 
     await orm.migrator.down();
     await expectExecuted(2);

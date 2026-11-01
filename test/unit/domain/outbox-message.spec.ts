@@ -74,6 +74,24 @@ describe('OutboxMessage', () => {
     expect(message.nextAttemptAt).toEqual(at(OUTBOX_MAX_RETRY_DELAY_MS));
   });
 
+  it('shortens the delay by at most the jitter ratio without exceeding the cap', () => {
+    const message = OutboxMessage.enqueue(event());
+    message.scheduleRetry(at(0), 0.999);
+    expect(message.nextAttemptAt).toEqual(
+      at(1_000 - Math.floor(1_000 * 0.2 * 0.999)),
+    );
+    for (let i = 0; i < 20; i += 1) {
+      message.scheduleRetry(at(0), 0.5);
+    }
+    expect(message.nextAttemptAt).toEqual(
+      at(OUTBOX_MAX_RETRY_DELAY_MS - OUTBOX_MAX_RETRY_DELAY_MS * 0.1),
+    );
+    expect(() => message.scheduleRetry(at(0), 1)).toThrow(InvalidMessageError);
+    expect(() => message.scheduleRetry(at(0), -0.1)).toThrow(
+      InvalidMessageError,
+    );
+  });
+
   it('is published once and then refuses further changes', () => {
     const message = OutboxMessage.enqueue(event());
     message.markPublished(at(10));

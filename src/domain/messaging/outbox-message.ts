@@ -31,6 +31,7 @@ export interface OutboxMessageState {
 
 export const OUTBOX_BASE_RETRY_DELAY_MS = 1_000;
 export const OUTBOX_MAX_RETRY_DELAY_MS = 300_000;
+export const OUTBOX_RETRY_JITTER_RATIO = 0.2;
 
 export class OutboxMessage {
   readonly id: string;
@@ -116,8 +117,11 @@ export class OutboxMessage {
     this.#publishedAtMs = at.getTime();
   }
 
-  scheduleRetry(now: Date): void {
+  scheduleRetry(now: Date, jitter = 0): void {
     assertValidDate(now, 'now');
+    if (!Number.isFinite(jitter) || jitter < 0 || jitter >= 1) {
+      throw new InvalidMessageError('jitter must be within [0, 1)');
+    }
     this.#assertPending();
     const attempts = this.#attempts + 1;
     const delay = Math.min(
@@ -125,7 +129,10 @@ export class OutboxMessage {
       OUTBOX_MAX_RETRY_DELAY_MS,
     );
     this.#attempts = attempts;
-    this.#nextAttemptAtMs = now.getTime() + delay;
+    this.#nextAttemptAtMs =
+      now.getTime() +
+      delay -
+      Math.floor(delay * OUTBOX_RETRY_JITTER_RATIO * jitter);
   }
 
   #assertPending(): void {
