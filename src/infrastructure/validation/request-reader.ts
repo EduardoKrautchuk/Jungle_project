@@ -1,7 +1,7 @@
 import {
   InvalidRequestError,
   type ValidationIssue,
-} from '../../../application/application.errors.js';
+} from '../../application/application.errors.js';
 
 const UUID_PATTERN =
   /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;

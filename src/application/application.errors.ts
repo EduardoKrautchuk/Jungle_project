@@ -1,6 +1,7 @@
 export type ApplicationErrorCode =
   | 'VALIDATION_FAILED'
   | 'IDEMPOTENCY_CONFLICT'
+  | 'MESSAGE_PAYLOAD_MISMATCH'
   | 'WALLET_ALREADY_EXISTS'
   | 'WALLET_NOT_FOUND'
   | 'TRANSACTION_NOT_FOUND';
@@ -51,5 +52,14 @@ export class WalletNotFoundError extends ApplicationError {
 export class TransactionNotFoundError extends ApplicationError {
   constructor() {
     super('TRANSACTION_NOT_FOUND', 'Transaction not found');
+  }
+}
+
+export class MessagePayloadMismatchError extends ApplicationError {
+  constructor() {
+    super(
+      'MESSAGE_PAYLOAD_MISMATCH',
+      'messageId was already received with a different payload',
+    );
   }
 }

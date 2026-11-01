@@ -32,7 +32,7 @@ import {
   parseCreateWallet,
   parseLedgerQuery,
 } from './validation/request-parsers.js';
-import { readUuid } from './validation/request-reader.js';
+import { readUuid } from '../validation/request-reader.js';
 import { ProviderAuthGuard } from './auth/provider-auth.guard.js';
 
 @Controller('wallets')

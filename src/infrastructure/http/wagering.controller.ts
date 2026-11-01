@@ -28,7 +28,7 @@ import {
   parseProviderPath,
   parseWagerRequest,
 } from './validation/request-parsers.js';
-import { readUuid } from './validation/request-reader.js';
+import { readUuid } from '../validation/request-reader.js';
 import { ProviderAuthGuard } from './auth/provider-auth.guard.js';
 
 const STATUS_CODE: Readonly<Record<WagerTransactionStatus, number>> = {

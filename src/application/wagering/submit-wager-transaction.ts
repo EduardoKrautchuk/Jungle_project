@@ -20,6 +20,12 @@ import type {
 } from '../ports/persistence.js';
 import type { Clock, IdGenerator } from '../ports/runtime.js';
 import {
+  admitDelivery,
+  completeDelivery,
+  isAlreadyProcessed,
+  type InboxDelivery,
+} from '../messaging/inbox-delivery.js';
+import {
   eventContext,
   type SettlementContext,
   type WagerSettlement,
@@ -36,6 +42,12 @@ export interface SubmitWagerTransactionCommand extends WagerRequestPayload {
   readonly causationId?: string;
 }
 
+export type MessageSubmission =
+  | { readonly outcome: 'APPLIED'; readonly result: WagerTransactionResult }
+  | { readonly outcome: 'DUPLICATE_MESSAGE' };
+
+const DUPLICATE_MESSAGE: MessageSubmission = { outcome: 'DUPLICATE_MESSAGE' };
+
 export class SubmitWagerTransaction {
   constructor(
     private readonly uow: UnitOfWork,
@@ -47,56 +59,116 @@ export class SubmitWagerTransaction {
   async execute(
     command: SubmitWagerTransactionCommand,
   ): Promise<WagerTransactionResult> {
+    const submission = await this.#submit(command, undefined);
+    if (submission.outcome === 'DUPLICATE_MESSAGE') {
+      throw new Error('a duplicate message requires an inbox delivery');
+    }
+    return submission.result;
+  }
+
+  executeMessage(
+    command: SubmitWagerTransactionCommand,
+    delivery: InboxDelivery,
+  ): Promise<MessageSubmission> {
+    return this.#submit(command, delivery);
+  }
+
+  async #submit(
+    command: SubmitWagerTransactionCommand,
+    delivery: InboxDelivery | undefined,
+  ): Promise<MessageSubmission> {
     const incoming = this.#createTransaction(command);
 
-    const known = await this.uow.run((repositories) =>
-      findKnown(repositories, incoming),
+    const early = await this.uow.run(
+      async (repositories): Promise<MessageSubmission | undefined> => {
+        if (
+          delivery !== undefined &&
+          (await isAlreadyProcessed(repositories, delivery))
+        ) {
+          return DUPLICATE_MESSAGE;
+        }
+        const known = await findKnown(repositories, incoming);
+        if (known === undefined) {
+          return undefined;
+        }
+        const result = replayOf(known, incoming);
+        return this.#recordDelivery(repositories, delivery, () =>
+          Promise.resolve(result),
+        );
+      },
     );
-    if (known !== undefined) {
-      return replayOf(known, incoming);
+    if (early !== undefined) {
+      return early;
     }
 
     return this.uow.runWithWalletLock(
       incoming.walletId,
-      async ({ wallet, repositories }) => {
-        const context: SettlementContext = {
-          now: this.clock.now(),
-          correlationId: command.correlationId,
-          causationId: command.causationId,
-        };
-        const access = checkWallet(wallet, incoming);
-        if (access.outcome === 'REJECT') {
-          incoming.reject(access.failureCode);
-        }
-
-        const record = initialRecord(incoming);
-        const claim = await repositories.transactions.claim(record);
-        if (claim.outcome !== 'CREATED') {
-          return replayOf(claim.existing, incoming);
-        }
-
-        if (access.outcome === 'REJECT') {
-          await repositories.outbox.enqueue(
-            OutboxMessage.enqueue(
-              WagerTransactionRejected.from(
-                incoming,
-                access.failureCode,
-                eventContext(this.ids, context),
-              ),
-            ),
-          );
-          return toWagerTransactionResult(record, false);
-        }
-
-        const settled = await this.settlement.settle(
-          repositories,
-          access.wallet,
-          record,
-          context,
-        );
-        return toWagerTransactionResult(settled, false);
-      },
+      ({ wallet, repositories }) =>
+        this.#recordDelivery(repositories, delivery, (now) =>
+          this.#apply(repositories, wallet, incoming, {
+            now,
+            correlationId: command.correlationId,
+            causationId: command.causationId,
+          }),
+        ),
     );
+  }
+
+  async #recordDelivery(
+    repositories: TransactionalRepositories,
+    delivery: InboxDelivery | undefined,
+    work: (now: Date) => Promise<WagerTransactionResult>,
+  ): Promise<MessageSubmission> {
+    const now = this.clock.now();
+    if (delivery === undefined) {
+      return { outcome: 'APPLIED', result: await work(now) };
+    }
+    const inbox = await admitDelivery(repositories, delivery, now);
+    if (inbox === undefined) {
+      return DUPLICATE_MESSAGE;
+    }
+    const result = await work(now);
+    await completeDelivery(repositories, inbox, this.clock.now());
+    return { outcome: 'APPLIED', result };
+  }
+
+  async #apply(
+    repositories: TransactionalRepositories,
+    wallet: Wallet | undefined,
+    incoming: WagerTransaction,
+    context: SettlementContext,
+  ): Promise<WagerTransactionResult> {
+    const access = checkWallet(wallet, incoming);
+    if (access.outcome === 'REJECT') {
+      incoming.reject(access.failureCode);
+    }
+
+    const record = initialRecord(incoming);
+    const claim = await repositories.transactions.claim(record);
+    if (claim.outcome !== 'CREATED') {
+      return replayOf(claim.existing, incoming);
+    }
+
+    if (access.outcome === 'REJECT') {
+      await repositories.outbox.enqueue(
+        OutboxMessage.enqueue(
+          WagerTransactionRejected.from(
+            incoming,
+            access.failureCode,
+            eventContext(this.ids, context),
+          ),
+        ),
+      );
+      return toWagerTransactionResult(record, false);
+    }
+
+    const settled = await this.settlement.settle(
+      repositories,
+      access.wallet,
+      record,
+      context,
+    );
+    return toWagerTransactionResult(settled, false);
   }
 
   #createTransaction(command: SubmitWagerTransactionCommand): WagerTransaction {

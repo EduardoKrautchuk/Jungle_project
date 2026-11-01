@@ -9,6 +9,9 @@ const WORKER_PATH = fileURLToPath(
   new URL('./debit-worker.ts', import.meta.url),
 );
 const SERVER_PATH = fileURLToPath(new URL('./http-server.ts', import.meta.url));
+const SQS_WORKER_PATH = fileURLToPath(
+  new URL('./sqs-worker.ts', import.meta.url),
+);
 
 type Child = Bun.Subprocess<'pipe', 'pipe', 'pipe'>;
 
@@ -40,6 +43,17 @@ export class WorkerProcess {
 
   static spawnServer(name: string): WorkerProcess {
     return WorkerProcess.start(name, SERVER_PATH, {});
+  }
+
+  static spawnSqsWorker(
+    name: string,
+    env: Record<string, string>,
+  ): WorkerProcess {
+    return WorkerProcess.start(name, SQS_WORKER_PATH, env);
+  }
+
+  output(prefix: string): string[] {
+    return this.lines.filter((line) => line.includes(prefix));
   }
 
   private static start(

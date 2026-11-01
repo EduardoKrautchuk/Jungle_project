@@ -13,8 +13,8 @@ export type DatabaseTarget = 'default' | 'test';
 type Env = Readonly<Record<string, string | undefined>>;
 
 export class InvalidConfigurationError extends Error {
-  constructor(problems: readonly string[]) {
-    super(`Invalid database configuration: ${problems.join('; ')}`);
+  constructor(problems: readonly string[], scope = 'database') {
+    super(`Invalid ${scope} configuration: ${problems.join('; ')}`);
     this.name = 'InvalidConfigurationError';
   }
 }

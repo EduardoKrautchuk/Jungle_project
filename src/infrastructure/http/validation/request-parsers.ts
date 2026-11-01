@@ -6,7 +6,7 @@ import {
   PROVIDER_ID,
   RequestReader,
   SUBMITTABLE_KIND,
-} from './request-reader.js';
+} from '../../validation/request-reader.js';
 
 export const DEFAULT_LEDGER_PAGE_SIZE = 50;
 export const MAX_LEDGER_PAGE_SIZE = 200;

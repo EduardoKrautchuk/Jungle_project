@@ -29,6 +29,7 @@ export interface ApiErrorBody {
 const APPLICATION_STATUS: Readonly<Record<ApplicationErrorCode, number>> = {
   VALIDATION_FAILED: HttpStatus.BAD_REQUEST,
   IDEMPOTENCY_CONFLICT: HttpStatus.CONFLICT,
+  MESSAGE_PAYLOAD_MISMATCH: HttpStatus.CONFLICT,
   WALLET_ALREADY_EXISTS: HttpStatus.CONFLICT,
   WALLET_NOT_FOUND: HttpStatus.NOT_FOUND,
   TRANSACTION_NOT_FOUND: HttpStatus.NOT_FOUND,
